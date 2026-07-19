@@ -45,22 +45,30 @@ fi
 
 echo
 echo "=========================================="
-echo "All tests passed!"
+echo "All automated tests passed!"
 echo "=========================================="
+echo
+echo "For visual validation, run:"
+echo "  ./tests/capture_window.sh"
+echo
+echo "This will:"
+echo "  1. Build the application"
+echo "  2. Run it in a window"
+echo "  3. Capture a screenshot"
+echo "  4. Save to target/screenshots/"
+echo
+echo "Requirements for capture_window.sh:"
+echo "  - xdotool (window control)"
+echo "  - ImageMagick (screenshot capture)"
+echo
+echo "Install on Ubuntu/Debian:"
+echo "  sudo apt-get install xdotool imagemagick"
 echo
 echo "To manually test the application, run:"
 echo "  ./target/release/bevy_sprite_editor"
 echo
-echo "Test the following features:"
-echo "  - Palette swatches appear on left side"
-echo "  - Atlas pixels appear on right side"
-echo "  - Left click on palette to select color"
-echo "  - Left click on atlas to draw"
-echo "  - O key to scroll left"
-echo "  - # key to scroll right"
-echo "  - Space to add tile"
-echo "  - Backspace to remove tile"
-echo "  - Ctrl+Z to undo"
-echo "  - Ctrl+Y to redo"
-echo "  - Ctrl+S to save (logs to console)"
-echo "  - Ctrl+O to load (logs to console)"
+echo "Expected visual elements:"
+echo "  - Color palette on LEFT side (17 color swatches)"
+echo "  - 8x8 grid of pixels on RIGHT side (512x512)"
+echo "  - Dark gray status bar at BOTTOM"
+echo "  - No gap between palette and viewport"
