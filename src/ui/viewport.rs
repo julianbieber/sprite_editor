@@ -87,9 +87,13 @@ fn update_viewport_rendering(
             // So we negate y to make atlas (0,0) appear at top
             let screen_y = -(y as f32) * PIXEL_SCALE as f32 + viewport.offset_y;
             
+            // Bevy sprites are anchored at center by default, so we need to offset by half pixel size
+            // to position the top-left corner at (screen_x, screen_y)
+            let half_pixel = PIXEL_SCALE as f32 / 2.0;
+            
             commands.spawn((
                 Sprite::from_color(pixel_color, Vec2::new(PIXEL_SCALE as f32, PIXEL_SCALE as f32)),
-                Transform::from_xyz(screen_x, screen_y, 0.0),
+                Transform::from_xyz(screen_x + half_pixel, screen_y - half_pixel, 0.0),
                 AtlasPixel { atlas_x: x, atlas_y: y },
             ));
         }
@@ -121,31 +125,40 @@ fn update_grid_lines(
     let atlas_width_screen = atlas_width * PIXEL_SCALE as f32;
     let atlas_height_screen = atlas_height * PIXEL_SCALE as f32;
     
-    // Grid line thickness and color
-    let grid_thickness = 2.0;  // Make lines visible
-    let grid_color = Color::Srgba(Srgba::new(0.8, 0.8, 0.8, 0.7));
+    // Grid line thickness and color - make them clearly visible
+    let grid_thickness = 2.0;
+    let grid_color = Color::Srgba(Srgba::new(0.3, 0.3, 0.3, 0.8));
     
     // Vertical grid lines - at each tile boundary (x = tile_size, 2*tile_size, ...)
+    // Position: screen_x = x_atlas * 64 - offset_x
+    // Y position: center of atlas in screen coords = -atlas_height_screen / 2 + offset_y / 2?
+    // Actually, atlas pixels go from y=0 (screen y=offset_y) to y=atlas_height-1 (screen y=-(atlas_height-1)*64 + offset_y)
+    // So center is at: (offset_y + (-(atlas_height-1)*64 + offset_y)) / 2 = offset_y - (atlas_height-1)*32
+    // For simplicity, use offset_y - atlas_height_screen / 2
+    let center_y = viewport.offset_y - atlas_height_screen / 2.0;
+    
     let mut x_atlas = tile_size;
     while x_atlas < atlas_width {
         let screen_x = x_atlas * PIXEL_SCALE as f32 - viewport.offset_x;
-        // Line height matches atlas height
         commands.spawn((
             Sprite::from_color(grid_color, Vec2::new(grid_thickness, atlas_height_screen)),
-            Transform::from_xyz(screen_x, 0.0, 0.1),
+            Transform::from_xyz(screen_x, center_y, 1.0),  // z=1 to be on top of pixels
             GridLine { is_vertical: true, position: x_atlas },
         ));
         x_atlas += tile_size;
     }
     
     // Horizontal grid lines - at each tile boundary (y = tile_size, 2*tile_size, ...)
+    // Position: screen_y = -y_atlas * 64 + offset_y
+    // X position: center of atlas = atlas_width_screen / 2 - offset_x
+    let center_x = atlas_width_screen / 2.0 - viewport.offset_x;
+    
     let mut y_atlas = tile_size;
     while y_atlas < atlas_height {
         let screen_y = -(y_atlas as f32) * PIXEL_SCALE as f32 + viewport.offset_y;
-        // Line width matches atlas width
         commands.spawn((
             Sprite::from_color(grid_color, Vec2::new(atlas_width_screen, grid_thickness)),
-            Transform::from_xyz(0.0, screen_y, 0.1),
+            Transform::from_xyz(center_x, screen_y, 1.0),  // z=1 to be on top of pixels
             GridLine { is_vertical: false, position: y_atlas },
         ));
         y_atlas += tile_size;
@@ -165,10 +178,12 @@ fn handle_pixel_hover(
                 if let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) {
                     for (pixel, transform) in pixel_query.iter() {
                         let pixel_size = PIXEL_SCALE as f32;
-                        if world_position.x >= transform.translation.x
-                            && world_position.x < transform.translation.x + pixel_size
-                            && world_position.y >= transform.translation.y
-                            && world_position.y < transform.translation.y + pixel_size {
+                        let pixel_x = transform.translation.x - pixel_size / 2.0;  // Left edge
+                        let pixel_y = transform.translation.y - pixel_size / 2.0;  // Top edge
+                        if world_position.x >= pixel_x
+                            && world_position.x < pixel_x + pixel_size
+                            && world_position.y >= pixel_y
+                            && world_position.y < pixel_y + pixel_size {
                             hovered.atlas_x = Some(pixel.atlas_x);
                             hovered.atlas_y = Some(pixel.atlas_y);
                             return;
