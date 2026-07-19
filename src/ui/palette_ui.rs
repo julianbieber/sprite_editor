@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy::color::palettes::css;
-use crate::config::{COLOR_SWATCH_SIZE, PALETTE_PANEL_WIDTH, DEFAULT_WINDOW_WIDTH};
+use crate::config::{COLOR_SWATCH_SIZE, PALETTE_PANEL_WIDTH, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT};
 use crate::editor::EditorResource;
 
 /// Marker component for the palette panel
@@ -34,20 +34,28 @@ impl Plugin for PaletteUiPlugin {
 
 /// Setup the palette panel
 fn setup_palette_panel(mut commands: Commands, windows: Query<&Window>) {
-    // Position palette panel on the left border of the screen
-    // Panel should be positioned so its right edge is at the left edge of the viewport
-    // With Camera2d, (0,0) is center, left edge is at -window_width/2
-    // Panel width is PALETTE_PANEL_WIDTH, so its center should be at:
+    // Position palette panel on the left border of the screen, aligned to top
+    // With Camera2d, (0,0) is center, left edge is at -window_width/2, top at window_height/2
+    // Panel width is PALETTE_PANEL_WIDTH, so its center x should be at:
     // x = -window_width/2 + PALETTE_PANEL_WIDTH/2
+    // Panel should be at top, so y = window_height/2 - PALETTE_PANEL_HEIGHT/2
+    // But we don't have a fixed height, so we position at top and let swatches flow down
     let window_width = if let Ok(window) = windows.single() {
         window.width()
     } else {
         DEFAULT_WINDOW_WIDTH as f32
     };
+    let window_height = if let Ok(window) = windows.single() {
+        window.height()
+    } else {
+        DEFAULT_WINDOW_HEIGHT as f32
+    };
     let panel_x = -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0;
+    // Position at top: y = window_height/2 - some margin
+    let panel_y = window_height / 2.0 - 20.0; // 20px margin from top
     
     commands.spawn((
-        Transform::from_xyz(panel_x, 0.0, 0.0),
+        Transform::from_xyz(panel_x, panel_y, 0.0),
         PalettePanel,
     ));
 }
@@ -66,15 +74,21 @@ fn update_palette_display(
     let panel_entity = if let Ok(entity) = panel_query.single() {
         entity
     } else {
-        // Create panel if it doesn't exist at the left border
+        // Create panel if it doesn't exist at the left border, top-aligned
         let window_width = if let Ok(window) = windows.single() {
             window.width()
         } else {
             DEFAULT_WINDOW_WIDTH as f32
         };
+        let window_height = if let Ok(window) = windows.single() {
+            window.height()
+        } else {
+            DEFAULT_WINDOW_HEIGHT as f32
+        };
         let panel_x = -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0;
+        let panel_y = window_height / 2.0 - 20.0;
         commands.spawn((
-            Transform::from_xyz(panel_x, 0.0, 0.0),
+            Transform::from_xyz(panel_x, panel_y, 0.0),
             PalettePanel,
         )).id()
     };
