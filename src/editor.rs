@@ -33,6 +33,11 @@ impl Viewport {
     pub fn new() -> Self {
         Self {
             offset_x: 0.0,
+            // Initialize offset_y to center a single tile vertically
+            // A tile is DEFAULT_TILE_SIZE pixels tall, each pixel is PIXEL_SCALE screen pixels
+            // To center: offset_y = (DEFAULT_TILE_SIZE * PIXEL_SCALE / 2) - (window_height / 2)
+            // But we don't have window_height here, so we'll rely on clamp to adjust it
+            // For now, use a reasonable default that works with typical window heights
             offset_y: 0.0,
         }
     }
@@ -67,11 +72,45 @@ impl Viewport {
         // Account for palette panel taking up space on the left
         // Viewport pixels start at x=0, palette covers -200 to 0
         let available_width = window_width - PALETTE_PANEL_WIDTH;
-        let max_offset_x = (atlas_width_pixels * PIXEL_SCALE as f32 - available_width).max(0.0);
-        let max_offset_y = (atlas_height_pixels * PIXEL_SCALE as f32 - window_height).max(0.0);
+        let atlas_width_screen = atlas_width_pixels * PIXEL_SCALE as f32;
+        let atlas_height_screen = atlas_height_pixels * PIXEL_SCALE as f32;
 
+        // For x-axis: clamp to [0, max_offset_x]
+        // max_offset_x is the offset where the right edge of the atlas reaches the right edge of the viewport
+        let max_offset_x = (atlas_width_screen - available_width).max(0.0);
         self.offset_x = self.offset_x.clamp(0.0, max_offset_x);
-        self.offset_y = self.offset_y.clamp(0.0, max_offset_y);
+
+        // For y-axis with flipped coordinates:
+        // screen_y = -y * PIXEL_SCALE + offset_y
+        // With offset_y=0, atlas extends from y=0 (top) to y=-atlas_height_screen (bottom)
+        // To see the full atlas:
+        // - Bottom of atlas must be >= -window_height/2 (bottom of visible area)
+        //   => -atlas_height_screen + offset_y >= -window_height/2
+        //   => offset_y >= atlas_height_screen - window_height/2
+        // - Top of atlas must be <= window_height/2 (top of visible area)
+        //   => offset_y <= window_height/2
+        //
+        // If atlas fits in window (atlas_height_screen < window_height):
+        // We need offset_y >= atlas_height_screen - window_height/2 (which is negative, so min is 0)
+        // And offset_y <= window_height/2
+        // But to center: offset_y = window_height/2 - atlas_height_screen/2
+        //
+        // If atlas is taller than window:
+        // We need offset_y >= atlas_height_screen - window_height/2 (positive)
+        // And offset_y <= window_height/2
+        //
+        // For simplicity, we'll set:
+        // - min_offset_y: ensures bottom of atlas doesn't go below window bottom
+        // - max_offset_y: ensures top of atlas doesn't go above window top
+        let min_offset_y = (atlas_height_screen - window_height / 2.0).max(0.0);
+        let max_offset_y = window_height / 2.0;
+        
+        // But we also want to allow scrolling when atlas is taller than window
+        // In that case, max_offset_y should be larger
+        let required_max_for_bottom = atlas_height_screen - window_height / 2.0;
+        let max_offset_y = max_offset_y.max(required_max_for_bottom);
+
+        self.offset_y = self.offset_y.clamp(min_offset_y, max_offset_y);
     }
 
     /// Scroll by one tile to the left

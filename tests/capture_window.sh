@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # Screenshot capture script for Bevy Sprite Atlas Editor
-# Uses xdotool and ImageMagick (import) to capture the application window
+# Uses xdotool and scrot/import to capture the application window
 #
 # Requirements:
 #   - xdotool (for window control)
-#   - ImageMagick (for screenshot capture)
+#   - scrot or ImageMagick (for screenshot capture)
 #   - X11 display server
 #
 # Usage: ./tests/capture_window.sh [output_file.png]
@@ -33,16 +33,26 @@ echo "Output: $OUTPUT_FILE"
 echo
 
 # Check requirements
-for cmd in xdotool import; do
-    if ! command -v $cmd &> /dev/null; then
-        echo "ERROR: '$cmd' not found. Please install:"
-        echo "  xdotool: sudo apt-get install xdotool"
-        echo "  ImageMagick: sudo apt-get install imagemagick"
-        exit 1
-    fi
-done
+if ! command -v xdotool &> /dev/null; then
+    echo "ERROR: 'xdotool' not found. Please install:"
+    echo "  sudo apt-get install xdotool"
+    exit 1
+fi
 
-echo "✓ Requirements met (xdotool, import)"
+# Prefer scrot over import
+SCREENSHOT_CMD=""
+if command -v scrot &> /dev/null; then
+    SCREENSHOT_CMD="scrot"
+elif command -v import &> /dev/null; then
+    SCREENSHOT_CMD="import"
+else
+    echo "ERROR: Neither 'scrot' nor 'import' found. Please install:"
+    echo "  scrot: sudo apt-get install scrot"
+    echo "  ImageMagick: sudo apt-get install imagemagick"
+    exit 1
+fi
+
+echo "✓ Requirements met (xdotool, $SCREENSHOT_CMD)"
 echo
 
 # Build the application in release mode
@@ -55,7 +65,7 @@ echo
 
 # Run the application in the background
 BINARY="$PROJECT_DIR/target/release/bevy_sprite_editor"
-$BINARY &
+$BINARY > /tmp/bevy_window.log 2>&1 &
 APP_PID=$!
 
 # Wait for the window to appear (up to 10 seconds)
@@ -72,25 +82,47 @@ done
 
 if [ -z "$WINDOW_ID" ]; then
     echo "✗ Window did not appear after 10 seconds"
+    cat /tmp/bevy_window.log
     kill $APP_PID 2>/dev/null || true
     exit 1
 fi
 
-# Activate and focus the window
-xdotool windowactivate $WINDOW_ID
+# Move window to center of screen
+xdotool windowmove $WINDOW_ID 0 0
 sleep 0.5
+
+# Raise and focus the window
+xdotool windowraise $WINDOW_ID
+xdotool windowactivate $WINDOW_ID
+xdotool windowfocus $WINDOW_ID
+sleep 2
+
+# Get final window geometry
+echo "Window geometry:"
+xdotool getwindowgeometry $WINDOW_ID
 
 # Capture the window screenshot
 echo "Capturing screenshot..."
-import -window $WINDOW_ID "$OUTPUT_FILE"
+if [ "$SCREENSHOT_CMD" = "scrot" ]; then
+    scrot --border 0 -u "$OUTPUT_FILE"
+else
+    import -window $WINDOW_ID "$OUTPUT_FILE"
+fi
 
 if [ -f "$OUTPUT_FILE" ]; then
     echo "✓ Screenshot saved to: $OUTPUT_FILE"
     echo
     echo "Image info:"
-    identify "$OUTPUT_FILE" 2>/dev/null | head -1 || echo "  (identify not available)"
+    file "$OUTPUT_FILE"
+    echo
+    if command -v identify &> /dev/null; then
+        identify "$OUTPUT_FILE" 2>/dev/null | head -1
+    fi
     echo
     echo "File size: $(du -h "$OUTPUT_FILE" | cut -f1)"
+    echo
+echo "You can view the screenshot with:"
+    echo "  eog $OUTPUT_FILE"
 else
     echo "✗ Failed to capture screenshot"
     exit 1
@@ -104,10 +136,3 @@ echo
 echo "=========================================="
 echo "Screenshot Test Complete"
 echo "=========================================="
-echo
-echo "To view the screenshot:"
-echo "  xdg-open $OUTPUT_FILE"
-echo
-echo "Or manually inspect:"
-echo "  eog $OUTPUT_FILE"
-echo "  firefox $OUTPUT_FILE"

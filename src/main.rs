@@ -38,6 +38,7 @@ fn main() {
                 resolution: WindowResolution::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
                 resizable: true,
                 present_mode: bevy::window::PresentMode::AutoNoVsync,
+                position: bevy::window::WindowPosition::At(IVec2::new(100, 100)),
                 ..default()
             }),
             ..default()
