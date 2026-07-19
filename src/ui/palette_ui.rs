@@ -42,14 +42,18 @@ fn setup_palette_panel(mut commands: Commands, windows: Query<&Window>) {
     // Position panel at left edge of screen
     // Panel left edge at x = -window_width/2, so panel center at x = -window_width/2 + panel_width/2
     let panel_x = -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0;
-    // Position at top with margin
-    // y = window_height/2 - margin - panel_height/2 (but we don't know height yet)
-    // For now, position at top with 10px margin
-    let panel_y = window_height / 2.0 - 10.0 - (COLOR_SWATCH_SIZE + SWATCH_BORDER * 2.0) * 7.0; // Approximate for 15 colors
+    
+    // Position at top of screen with margin
+    // In Bevy Camera2d: top edge of screen is at y = window_height/2
+    // Panel top edge at y = window_height/2 - margin, so panel center at y = window_height/2 - margin - panel_height/2
+    // For now, create panel with large enough height for many colors
+    let panel_height: f32 = window_height; // Full height of window
+    let margin = 10.0;
+    let panel_y = window_height / 2.0 - margin - panel_height / 2.0;
     
     // Create the panel as a sprite (background)
     commands.spawn((
-        Sprite::from_color(Color::Srgba(Srgba::new(0.15, 0.15, 0.15, 0.8)), Vec2::new(PALETTE_PANEL_WIDTH, 1000.0)),
+        Sprite::from_color(Color::Srgba(Srgba::new(0.15, 0.15, 0.15, 0.8)), Vec2::new(PALETTE_PANEL_WIDTH, panel_height)),
         Transform::from_xyz(panel_x, panel_y, 0.0),
         PalettePanel,
     ));
@@ -74,9 +78,11 @@ fn update_palette_display(
     } else {
         // Create panel at left edge of screen
         let panel_x = -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0;
-        let panel_y = window_height / 2.0 - 10.0;
+        let panel_height: f32 = window_height;
+        let margin = 10.0;
+        let panel_y = window_height / 2.0 - margin - panel_height / 2.0;
         commands.spawn((
-            Sprite::from_color(Color::Srgba(Srgba::new(0.15, 0.15, 0.15, 0.8)), Vec2::new(PALETTE_PANEL_WIDTH, 1000.0)),
+            Sprite::from_color(Color::Srgba(Srgba::new(0.15, 0.15, 0.15, 0.8)), Vec2::new(PALETTE_PANEL_WIDTH, panel_height)),
             Transform::from_xyz(panel_x, panel_y, 0.0),
             PalettePanel,
         )).id()

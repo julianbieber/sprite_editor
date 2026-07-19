@@ -137,7 +137,7 @@ fn update_grid_lines(
 
     // Draw grid lines at tile boundaries - around each tile
     // Tile size in screen pixels
-    let tile_size_screen = tile_size * PIXEL_SCALE as f32;
+    let _tile_size_screen = tile_size * PIXEL_SCALE as f32;
     let atlas_width_screen = atlas_width * PIXEL_SCALE as f32;
     let atlas_height_screen = atlas_height * PIXEL_SCALE as f32;
 
