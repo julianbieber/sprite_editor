@@ -35,6 +35,8 @@ impl Plugin for ViewportPlugin {
                 handle_pixel_hover,
                 handle_pixel_draw,
                 handle_scroll_input,
+                handle_undo_redo_input,
+                handle_tile_input,
             ))
             .add_systems(PostUpdate, cleanup_pixels);
     }
@@ -121,7 +123,14 @@ fn handle_pixel_draw(
                 // Clone the selected color before mutating
                 if let Some(selected_index) = editor.editor.palette.selected_index {
                     if let Some(color) = editor.editor.palette.colors.get(selected_index).cloned() {
+                        let old_color = editor.editor.atlas.get_pixel_at(x, y);
                         editor.editor.atlas.set_pixel_at(x, y, color);
+                        editor.editor.history.record(crate::history::Action::SetPixel {
+                            x,
+                            y,
+                            old_color,
+                            new_color: color,
+                        });
                     }
                 }
             }
@@ -141,9 +150,42 @@ fn handle_scroll_input(
     
     // Check for scroll right (# key)
     // Note: In Bevy, the '#' character is typically KeyCode::Digit3 (shift+3 produces #)
-    // But the requirement specifies '#' key. We'll use Digit3 as it's the most common mapping.
     if keyboard.just_pressed(KeyCode::Digit3) {
         editor.editor.viewport.scroll_tile_right();
+    }
+}
+
+/// Handle keyboard input for undo/redo
+fn handle_undo_redo_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut editor: ResMut<EditorResource>,
+) {
+    // Undo: Ctrl+Z
+    if (keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight))
+        && keyboard.just_pressed(KeyCode::KeyZ) {
+        editor.editor.undo();
+    }
+    
+    // Redo: Ctrl+Y
+    if (keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight))
+        && keyboard.just_pressed(KeyCode::KeyY) {
+        editor.editor.redo();
+    }
+}
+
+/// Handle keyboard input for tile operations
+fn handle_tile_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut editor: ResMut<EditorResource>,
+) {
+    // Add tile to the right: Space bar
+    if keyboard.just_pressed(KeyCode::Space) {
+        editor.editor.add_tile_to_right();
+    }
+    
+    // Remove tile from the right: Backspace
+    if keyboard.just_pressed(KeyCode::Backspace) {
+        editor.editor.remove_tile_from_right();
     }
 }
 
