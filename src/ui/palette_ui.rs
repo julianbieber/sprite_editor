@@ -95,8 +95,9 @@ fn update_palette_display(
         )).id();
         
         // Make swatches children of the panel
-        commands.entity(border_entity).set_parent_in_place(panel_entity);
-        commands.entity(inner_color_entity).set_parent_in_place(border_entity);
+        // Use add_child so the Transform is relative to parent
+        commands.entity(panel_entity).add_child(border_entity);
+        commands.entity(border_entity).add_child(inner_color_entity);
         
         y_offset += swatch_size + SWATCH_MARGIN * 2.0;
     }
