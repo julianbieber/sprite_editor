@@ -225,16 +225,21 @@ fn handle_scroll_input(
     mut editor: ResMut<EditorResource>,
 ) {
     // Check for scroll left (o umlaut key: \u00F6 / ö)
-    // On German keyboard, ö is typically KeyO with AltGr or on Semicolon key
+    // On German keyboard layout, ö is typically on BracketLeft (same physical key as [)
+    // Also try Semicolon, Quote, and KeyO
     if keyboard.just_pressed(KeyCode::KeyO) 
-        || keyboard.just_pressed(KeyCode::Semicolon) {
+        || keyboard.just_pressed(KeyCode::Semicolon)
+        || keyboard.just_pressed(KeyCode::Quote)
+        || keyboard.just_pressed(KeyCode::BracketLeft)
+        || keyboard.just_pressed(KeyCode::BracketRight) {
         editor.editor.viewport.scroll_tile_left();
     }
     
     // Check for scroll right (# key)
-    // On German keyboard, # is typically Shift+3 (Digit3) or Numpad3
+    // On German keyboard, # is typically Shift+3 (Digit3), Numpad3, or KeyS (ß key)
     if keyboard.just_pressed(KeyCode::Digit3) 
-        || keyboard.just_pressed(KeyCode::Numpad3) {
+        || keyboard.just_pressed(KeyCode::Numpad3)
+        || keyboard.just_pressed(KeyCode::KeyS) {
         editor.editor.viewport.scroll_tile_right();
     }
 }
