@@ -65,7 +65,8 @@ impl Viewport {
         let atlas_height_pixels = atlas.height_in_pixels() as f32;
 
         // Account for palette panel taking up space on the left
-        let available_width = window_width - PALETTE_PANEL_WIDTH - 20.0;
+        // Viewport pixels start at x=0, palette covers -200 to 0
+        let available_width = window_width - PALETTE_PANEL_WIDTH;
         let max_offset_x = (atlas_width_pixels * PIXEL_SCALE as f32 - available_width).max(0.0);
         let max_offset_y = (atlas_height_pixels * PIXEL_SCALE as f32 - window_height).max(0.0);
 

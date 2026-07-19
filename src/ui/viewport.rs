@@ -71,8 +71,10 @@ fn update_viewport_rendering(
     for y in 0..atlas_height {
         for x in 0..atlas_width {
             let pixel_color = atlas.get_pixel_at(x, y);
-            // Offset viewport by palette panel width to prevent overlap
-            let screen_x = x as f32 * PIXEL_SCALE as f32 - viewport.offset_x + PALETTE_PANEL_WIDTH / 2.0 + 10.0;
+            // Position viewport to the right of the palette panel
+            // Palette panel is at -PALETTE_PANEL_WIDTH/2 and is 200 wide, so it covers -200 to 0
+            // Viewport starts at 0 (right edge of palette)
+            let screen_x = x as f32 * PIXEL_SCALE as f32 - viewport.offset_x;
             // Flip y-coordinate: atlas uses top-left origin, Bevy Camera2d has y-up
             // So we negate y to make atlas (0,0) appear at top
             let screen_y = -(y as f32) * PIXEL_SCALE as f32 + viewport.offset_y;

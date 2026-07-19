@@ -55,7 +55,7 @@ fn update_palette_display(
     let panel_entity = if let Ok(entity) = panel_query.single() {
         entity
     } else {
-        // Create panel if it doesn't exist
+        // Create panel if it doesn't exist (same position as setup_palette_panel)
         commands.spawn((
             Transform::from_xyz(-PALETTE_PANEL_WIDTH / 2.0, 0.0, 0.0),
             PalettePanel,
