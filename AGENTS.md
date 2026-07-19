@@ -183,7 +183,7 @@ enum Action {
 - 1 tile (8x8) = 512x512 screen pixels
 - atlas pixel at (x,y) renders at screen position:
   - x_screen = x * 64 - viewport_offset_x
-  - y_screen = y * 64 - viewport_offset_y
+  - y_screen = -y * 64 + viewport_offset_y (flipped because atlas uses top-left origin, Bevy Camera2d has y-up)
 
 ### Colors
 - Transparent: `Srgba::new(0.0, 0.0, 0.0, 0.0)`
@@ -219,6 +219,7 @@ enum Action {
 2. ✅ Viewport offset to avoid overlap with palette
 3. ✅ Swatches as children of panel entity
 4. ✅ Viewport clamping accounts for palette width
+5. ✅ Viewport y-axis clamping fixed to ensure atlas is fully visible
 
 ### ⚠️ Phase 3: Palette Management - PARTIAL
 1. ❌ Add color UI
@@ -290,5 +291,6 @@ image = "0.25"
 ---
 
 *Last updated: 2026-07-19*
+*Recent fix: Window positioning and viewport y-axis clamping*
 *Project lead: jbieber*
 *Status: MVP functional - core editing features working*
