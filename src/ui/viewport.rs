@@ -1,9 +1,9 @@
 //! Viewport rendering for the sprite atlas editor
 
-use bevy::prelude::*;
-use crate::config::{PIXEL_SCALE, DEFAULT_TILE_SIZE, PALETTE_PANEL_WIDTH};
+use crate::config::{DEFAULT_TILE_SIZE, PALETTE_PANEL_WIDTH, PIXEL_SCALE};
 use crate::editor::EditorResource;
 use crate::file_io;
+use bevy::prelude::*;
 
 /// Marker component for the atlas viewport
 #[derive(Component)]
@@ -35,29 +35,28 @@ pub struct ViewportPlugin;
 
 impl Plugin for ViewportPlugin {
     fn build(&self, app: &mut App) {
-        app
-            .init_resource::<HoveredPixel>()
+        app.init_resource::<HoveredPixel>()
             .add_systems(Startup, setup_viewport)
-            .add_systems(Update, (
-                update_viewport_rendering,
-                update_grid_lines,
-                handle_pixel_hover,
-                handle_pixel_draw,
-                handle_scroll_input,
-                handle_undo_redo_input,
-                handle_tile_input,
-                handle_save_load_input,
-            ))
+            .add_systems(
+                Update,
+                (
+                    update_viewport_rendering,
+                    update_grid_lines,
+                    handle_pixel_hover,
+                    handle_pixel_draw,
+                    handle_scroll_input,
+                    handle_undo_redo_input,
+                    handle_tile_input,
+                    handle_save_load_input,
+                ),
+            )
             .add_systems(PostUpdate, cleanup_pixels);
     }
 }
 
 /// Setup the viewport
 fn setup_viewport(mut commands: Commands) {
-    commands.spawn((
-        Transform::default(),
-        AtlasViewport,
-    ));
+    commands.spawn((Transform::default(), AtlasViewport));
 }
 
 /// Update the viewport rendering
@@ -68,14 +67,14 @@ fn update_viewport_rendering(
 ) {
     let atlas = &editor.editor.atlas;
     let viewport = &editor.editor.viewport;
-    
+
     for entity in pixel_query.iter() {
         commands.entity(entity).despawn();
     }
-    
+
     let atlas_width = atlas.width_in_pixels();
     let atlas_height = atlas.height_in_pixels();
-    
+
     for y in 0..atlas_height {
         for x in 0..atlas_width {
             let pixel_color = atlas.get_pixel_at(x, y);
@@ -86,15 +85,21 @@ fn update_viewport_rendering(
             // Flip y-coordinate: atlas uses top-left origin, Bevy Camera2d has y-up
             // So we negate y to make atlas (0,0) appear at top
             let screen_y = -(y as f32) * PIXEL_SCALE as f32 + viewport.offset_y;
-            
+
             // Bevy sprites are anchored at center by default, so we need to offset by half pixel size
             // to position the top-left corner at (screen_x, screen_y)
             let half_pixel = PIXEL_SCALE as f32 / 2.0;
-            
+
             commands.spawn((
-                Sprite::from_color(pixel_color, Vec2::new(PIXEL_SCALE as f32, PIXEL_SCALE as f32)),
+                Sprite::from_color(
+                    pixel_color,
+                    Vec2::new(PIXEL_SCALE as f32, PIXEL_SCALE as f32),
+                ),
                 Transform::from_xyz(screen_x + half_pixel, screen_y - half_pixel, 0.0),
-                AtlasPixel { atlas_x: x, atlas_y: y },
+                AtlasPixel {
+                    atlas_x: x,
+                    atlas_y: y,
+                },
             ));
         }
     }
@@ -109,52 +114,58 @@ fn update_grid_lines(
     let atlas = &editor.editor.atlas;
     let viewport = &editor.editor.viewport;
     let tile_size = atlas.tile_size as f32;
-    
+
     // Despawn old grid lines
     for entity in grid_query.iter() {
         commands.entity(entity).despawn();
     }
-    
+
     // Calculate grid line positions
     let atlas_width = atlas.width_in_pixels() as f32;
     let atlas_height = atlas.height_in_pixels() as f32;
-    
+
     // Draw grid lines at tile boundaries - around each tile
     // Tile size in screen pixels
     let tile_size_screen = tile_size * PIXEL_SCALE as f32;
     let atlas_width_screen = atlas_width * PIXEL_SCALE as f32;
     let atlas_height_screen = atlas_height * PIXEL_SCALE as f32;
-    
+
     // Grid line thickness and color - make them clearly visible
     let grid_thickness = 2.0;
     let grid_color = Color::Srgba(Srgba::new(0.3, 0.3, 0.3, 0.8));
-    
+
     // Vertical grid lines - at each tile boundary including left edge (x = 0, tile_size, 2*tile_size, ...)
     // Y position: center of atlas in screen coords
     let center_y = viewport.offset_y - atlas_height_screen / 2.0;
-    
+
     let mut x_atlas = 0.0;
     while x_atlas <= atlas_width {
         let screen_x = x_atlas * PIXEL_SCALE as f32 - viewport.offset_x;
         commands.spawn((
             Sprite::from_color(grid_color, Vec2::new(grid_thickness, atlas_height_screen)),
             Transform::from_xyz(screen_x, center_y, 1.0),
-            GridLine { is_vertical: true, position: x_atlas },
+            GridLine {
+                is_vertical: true,
+                position: x_atlas,
+            },
         ));
         x_atlas += tile_size;
     }
-    
+
     // Horizontal grid lines - at each tile boundary including top edge (y = 0, tile_size, 2*tile_size, ...)
     // X position: center of atlas
     let center_x = atlas_width_screen / 2.0 - viewport.offset_x;
-    
+
     let mut y_atlas = 0.0;
     while y_atlas <= atlas_height {
         let screen_y = -(y_atlas as f32) * PIXEL_SCALE as f32 + viewport.offset_y;
         commands.spawn((
             Sprite::from_color(grid_color, Vec2::new(atlas_width_screen, grid_thickness)),
             Transform::from_xyz(center_x, screen_y, 1.0),
-            GridLine { is_vertical: false, position: y_atlas },
+            GridLine {
+                is_vertical: false,
+                position: y_atlas,
+            },
         ));
         y_atlas += tile_size;
     }
@@ -170,15 +181,18 @@ fn handle_pixel_hover(
     if let Ok(window) = windows.single() {
         if let Some(cursor_position) = window.cursor_position() {
             if let Ok((camera, camera_transform)) = camera_q.single() {
-                if let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) {
+                if let Ok(world_position) =
+                    camera.viewport_to_world_2d(camera_transform, cursor_position)
+                {
                     for (pixel, transform) in pixel_query.iter() {
                         let pixel_size = PIXEL_SCALE as f32;
-                        let pixel_x = transform.translation.x - pixel_size / 2.0;  // Left edge
-                        let pixel_y = transform.translation.y - pixel_size / 2.0;  // Top edge
+                        let pixel_x = transform.translation.x - pixel_size / 2.0; // Left edge
+                        let pixel_y = transform.translation.y - pixel_size / 2.0; // Top edge
                         if world_position.x >= pixel_x
                             && world_position.x < pixel_x + pixel_size
                             && world_position.y >= pixel_y
-                            && world_position.y < pixel_y + pixel_size {
+                            && world_position.y < pixel_y + pixel_size
+                        {
                             hovered.atlas_x = Some(pixel.atlas_x);
                             hovered.atlas_y = Some(pixel.atlas_y);
                             return;
@@ -206,12 +220,15 @@ fn handle_pixel_draw(
                     if let Some(color) = editor.editor.palette.colors.get(selected_index).cloned() {
                         let old_color = editor.editor.atlas.get_pixel_at(x, y);
                         editor.editor.atlas.set_pixel_at(x, y, color);
-                        editor.editor.history.record(crate::history::Action::SetPixel {
-                            x,
-                            y,
-                            old_color,
-                            new_color: color,
-                        });
+                        editor
+                            .editor
+                            .history
+                            .record(crate::history::Action::SetPixel {
+                                x,
+                                y,
+                                old_color,
+                                new_color: color,
+                            });
                     }
                 }
             }
@@ -220,58 +237,42 @@ fn handle_pixel_draw(
 }
 
 /// Handle keyboard input for scrolling
-fn handle_scroll_input(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut editor: ResMut<EditorResource>,
-) {
-    // Check for scroll left (o umlaut key: \u00F6 / ö)
-    // On German keyboard layout, ö is typically on BracketLeft (same physical key as [)
-    // Also try Semicolon, Quote, and KeyO
-    if keyboard.just_pressed(KeyCode::KeyO) 
-        || keyboard.just_pressed(KeyCode::Semicolon)
-        || keyboard.just_pressed(KeyCode::Quote)
-        || keyboard.just_pressed(KeyCode::BracketLeft)
-        || keyboard.just_pressed(KeyCode::BracketRight) {
+fn handle_scroll_input(keyboard: Res<ButtonInput<KeyCode>>, mut editor: ResMut<EditorResource>) {
+    if keyboard.just_pressed(KeyCode::KeyA) {
         editor.editor.viewport.scroll_tile_left();
     }
-    
+
     // Check for scroll right (# key)
     // On German keyboard, # is typically Shift+3 (Digit3), Numpad3, or KeyS (ß key)
-    if keyboard.just_pressed(KeyCode::Digit3) 
-        || keyboard.just_pressed(KeyCode::Numpad3)
-        || keyboard.just_pressed(KeyCode::KeyS) {
+    if keyboard.just_pressed(KeyCode::KeyD) {
         editor.editor.viewport.scroll_tile_right();
     }
 }
 
 /// Handle keyboard input for undo/redo
-fn handle_undo_redo_input(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut editor: ResMut<EditorResource>,
-) {
+fn handle_undo_redo_input(keyboard: Res<ButtonInput<KeyCode>>, mut editor: ResMut<EditorResource>) {
     // Undo: Ctrl+Z
     if (keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight))
-        && keyboard.just_pressed(KeyCode::KeyZ) {
+        && keyboard.just_pressed(KeyCode::KeyZ)
+    {
         editor.editor.undo();
     }
-    
+
     // Redo: Ctrl+Y
     if (keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight))
-        && keyboard.just_pressed(KeyCode::KeyY) {
+        && keyboard.just_pressed(KeyCode::KeyY)
+    {
         editor.editor.redo();
     }
 }
 
 /// Handle keyboard input for tile operations
-fn handle_tile_input(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut editor: ResMut<EditorResource>,
-) {
+fn handle_tile_input(keyboard: Res<ButtonInput<KeyCode>>, mut editor: ResMut<EditorResource>) {
     // Add tile to the right: Space bar
     if keyboard.just_pressed(KeyCode::Space) {
         editor.editor.add_tile_to_right();
     }
-    
+
     // Remove tile from the right: Backspace
     if keyboard.just_pressed(KeyCode::Backspace) {
         editor.editor.remove_tile_from_right();
@@ -286,7 +287,7 @@ fn cleanup_pixels(
 ) {
     let atlas_width = editor.editor.atlas.width_in_pixels();
     let atlas_height = editor.editor.atlas.height_in_pixels();
-    
+
     for (entity, pixel) in pixel_query.iter() {
         if pixel.atlas_x >= atlas_width || pixel.atlas_y >= atlas_height {
             commands.entity(entity).despawn();
@@ -295,13 +296,11 @@ fn cleanup_pixels(
 }
 
 /// Handle keyboard input for save/load operations
-fn handle_save_load_input(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    _editor: ResMut<EditorResource>,
-) {
+fn handle_save_load_input(keyboard: Res<ButtonInput<KeyCode>>, _editor: ResMut<EditorResource>) {
     // Save: Ctrl+S
     if (keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight))
-        && keyboard.just_pressed(KeyCode::KeyS) {
+        && keyboard.just_pressed(KeyCode::KeyS)
+    {
         // For now, just log - actual save will need a file path
         println!("Save triggered (Ctrl+S) - file picker needed for actual implementation");
         // TODO: Open file dialog and save
@@ -309,10 +308,11 @@ fn handle_save_load_input(
         //     eprintln!("Failed to save: {}", e);
         // });
     }
-    
+
     // Load: Ctrl+O
     if (keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight))
-        && keyboard.just_pressed(KeyCode::KeyO) {
+        && keyboard.just_pressed(KeyCode::KeyO)
+    {
         // For now, just log - actual load will need a file path
         println!("Load triggered (Ctrl+O) - file picker needed for actual implementation");
         // TODO: Open file dialog and load

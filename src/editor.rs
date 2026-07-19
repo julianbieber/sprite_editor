@@ -75,10 +75,22 @@ impl Viewport {
         let atlas_width_screen = atlas_width_pixels * PIXEL_SCALE as f32;
         let atlas_height_screen = atlas_height_pixels * PIXEL_SCALE as f32;
 
-        // For x-axis: clamp to [0, max_offset_x]
-        // max_offset_x is the offset where the right edge of the atlas reaches the right edge of the viewport
-        let max_offset_x = (atlas_width_screen - available_width).max(0.0);
-        self.offset_x = self.offset_x.clamp(0.0, max_offset_x);
+        // For x-axis: clamp offset_x to valid range
+        // Pixel rendering: screen_x = atlas_x * PIXEL_SCALE - offset_x * PIXEL_SCALE
+        // So offset_x moves atlas left/right in atlas pixel units
+        // 
+        // Minimum offset_x: when leftmost atlas pixel is at right edge of viewport
+        // screen_x(0) = 0 - offset_x * PIXEL_SCALE = available_width
+        // => offset_x = -available_width / PIXEL_SCALE
+        //
+        // Maximum offset_x: when rightmost atlas pixel is at left edge of viewport  
+        // screen_x(atlas_width-1) = (atlas_width-1) * PIXEL_SCALE - offset_x * PIXEL_SCALE = 0
+        // => offset_x = (atlas_width_pixels - 1)  (approximately atlas_width_pixels)
+        //
+        // For simplicity, use atlas_width_pixels as max and -available_width/PIXEL_SCALE as min
+        let min_offset_x = -available_width / PIXEL_SCALE as f32;
+        let max_offset_x = atlas_width_pixels - 1.0;
+        self.offset_x = self.offset_x.clamp(min_offset_x, max_offset_x);
 
         // For y-axis with flipped coordinates:
         // screen_y = -y * PIXEL_SCALE + offset_y
