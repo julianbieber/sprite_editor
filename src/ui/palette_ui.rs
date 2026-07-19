@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy::color::palettes::css;
-use crate::config::{COLOR_SWATCH_SIZE, PALETTE_PANEL_WIDTH};
+use crate::config::{COLOR_SWATCH_SIZE, PALETTE_PANEL_WIDTH, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT};
 use crate::editor::EditorResource;
 
 /// Marker component for the palette panel
@@ -32,27 +32,24 @@ impl Plugin for PaletteUiPlugin {
     }
 }
 
-/// Setup the palette panel
+/// Setup the palette panel using Bevy's screen-relative positioning
+/// In Bevy Camera2d: (0,0) is center, left edge at -width/2, top edge at height/2
 fn setup_palette_panel(mut commands: Commands, windows: Query<&Window>) {
-    // Position palette panel at the left edge of the screen, aligned to top
-    // In Bevy Camera2d coordinate system:
-    // - (0, 0) is the center of the screen
-    // - Left edge is at x = -window_width/2
-    // - Top edge is at y = window_height/2
-    // For a panel of width W to be positioned at the left edge:
-    // x = -window_width/2 + W/2 (so its right edge aligns with left screen edge)
-    // For top alignment with margin:
-    // y = window_height/2 - margin
     let window = windows.single().unwrap();
     let window_width = window.width();
     let window_height = window.height();
     
-    // Position at left edge
-    let panel_x = -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0;
-    // Position at top with 20px margin
-    let panel_y = window_height / 2.0 - 20.0;
+    // Position panel at left edge with small margin
+    // x = -window_width/2 + margin + panel_width/2
+    let panel_x = -window_width / 2.0 + 10.0 + PALETTE_PANEL_WIDTH / 2.0;
+    // Position at top with margin
+    // y = window_height/2 - margin - panel_height/2 (but we don't know height yet)
+    // For now, position at top with 10px margin
+    let panel_y = window_height / 2.0 - 10.0 - (COLOR_SWATCH_SIZE + SWATCH_BORDER * 2.0) * 7.0; // Approximate for 15 colors
     
+    // Create the panel as a sprite (background)
     commands.spawn((
+        Sprite::from_color(Color::Srgba(Srgba::new(0.15, 0.15, 0.15, 0.8)), Vec2::new(PALETTE_PANEL_WIDTH, 1000.0)),
         Transform::from_xyz(panel_x, panel_y, 0.0),
         PalettePanel,
     ));
@@ -67,18 +64,19 @@ fn update_palette_display(
     swatch_query: Query<Entity, With<ColorSwatch>>,
 ) {
     let palette = &editor.editor.palette;
+    let window = windows.single().unwrap();
+    let window_width = window.width();
+    let window_height = window.height();
     
     // Get or create the palette panel
     let panel_entity = if let Ok(entity) = panel_query.single() {
         entity
     } else {
-        // Create panel if it doesn't exist at the left border, top-aligned
-        let window = windows.single().unwrap();
-        let window_width = window.width();
-        let window_height = window.height();
-        let panel_x = -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0;
-        let panel_y = window_height / 2.0 - 20.0;
+        // Create panel at left edge
+        let panel_x = -window_width / 2.0 + 10.0 + PALETTE_PANEL_WIDTH / 2.0;
+        let panel_y = window_height / 2.0 - 10.0;
         commands.spawn((
+            Sprite::from_color(Color::Srgba(Srgba::new(0.15, 0.15, 0.15, 0.8)), Vec2::new(PALETTE_PANEL_WIDTH, 1000.0)),
             Transform::from_xyz(panel_x, panel_y, 0.0),
             PalettePanel,
         )).id()
@@ -89,7 +87,7 @@ fn update_palette_display(
         commands.entity(entity).despawn();
     }
     
-    let mut y_offset = 20.0;
+    let mut y_offset = 0.0;
     
     for (index, color) in palette.colors.iter().enumerate() {
         let is_selected = palette.selected_index == Some(index);
@@ -97,15 +95,15 @@ fn update_palette_display(
         let border_color = if is_selected {
             Color::Srgba(css::WHITE)
         } else {
-            Color::Srgba(Srgba::new(0.3, 0.3, 0.3, 0.8))
+            Color::Srgba(Srgba::new(0.4, 0.4, 0.4, 0.8))
         };
         
-        // Position swatches relative to panel center
+        // Position swatches relative to panel top-left
         let border_entity = commands.spawn((
             Sprite::from_color(border_color, Vec2::new(swatch_size, swatch_size)),
             Transform::from_xyz(
                 0.0,
-                -y_offset + swatch_size / 2.0,
+                -y_offset - swatch_size / 2.0,
                 0.0,
             ),
             ColorSwatch { color_index: index },
@@ -117,7 +115,6 @@ fn update_palette_display(
         )).id();
         
         // Make swatches children of the panel
-        // Use add_child so the Transform is relative to parent
         commands.entity(panel_entity).add_child(border_entity);
         commands.entity(border_entity).add_child(inner_color_entity);
         

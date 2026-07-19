@@ -115,53 +115,40 @@ fn update_grid_lines(
     let atlas_width = atlas.width_in_pixels() as f32;
     let atlas_height = atlas.height_in_pixels() as f32;
     
-    // Vertical grid lines (between tiles, at tile boundaries)
-    // Each vertical line is at x = tile_size, 2*tile_size, etc.
-    // Line spans from y=0 to y=atlas_height (in atlas coords)
-    // In screen coords: y_screen = -y_atlas * 64 + offset_y
-    // So the line goes from (-0*64 + offset_y) to (-atlas_height*64 + offset_y)
-    // Center of line in screen y: offset_y - atlas_height*32
-    let mut x = tile_size;
-    while x < atlas_width {
-        let screen_x = x * PIXEL_SCALE as f32 - viewport.offset_x;
-        let line_height = atlas_height * PIXEL_SCALE as f32;
-        // Center the line vertically with the atlas
-        // Top of atlas at screen_y = offset_y, bottom at screen_y = -atlas_height*64 + offset_y
-        // Middle: (offset_y + (-atlas_height*64 + offset_y)) / 2 = offset_y - atlas_height*32
-        let center_y = viewport.offset_y - atlas_height * PIXEL_SCALE as f32 / 2.0;
-        
-        // Spawn a vertical line sprite (tall and thin)
+    // Draw grid lines at tile boundaries
+    // Tile size in screen pixels
+    let tile_size_screen = tile_size * PIXEL_SCALE as f32;
+    let atlas_width_screen = atlas_width * PIXEL_SCALE as f32;
+    let atlas_height_screen = atlas_height * PIXEL_SCALE as f32;
+    
+    // Grid line thickness and color
+    let grid_thickness = 2.0;  // Make lines visible
+    let grid_color = Color::Srgba(Srgba::new(0.8, 0.8, 0.8, 0.7));
+    
+    // Vertical grid lines - at each tile boundary (x = tile_size, 2*tile_size, ...)
+    let mut x_atlas = tile_size;
+    while x_atlas < atlas_width {
+        let screen_x = x_atlas * PIXEL_SCALE as f32 - viewport.offset_x;
+        // Line height matches atlas height
         commands.spawn((
-            Sprite::from_color(Color::Srgba(Srgba::new(0.5, 0.5, 0.5, 0.5)), Vec2::new(1.0, line_height)),
-            Transform::from_xyz(screen_x, center_y, 0.1),
-            GridLine { is_vertical: true, position: x },
+            Sprite::from_color(grid_color, Vec2::new(grid_thickness, atlas_height_screen)),
+            Transform::from_xyz(screen_x, 0.0, 0.1),
+            GridLine { is_vertical: true, position: x_atlas },
         ));
-        x += tile_size;
+        x_atlas += tile_size;
     }
     
-    // Horizontal grid lines (between tiles, at tile boundaries)
-    // Each horizontal line is at y = tile_size, 2*tile_size, etc.
-    // Line spans from x=0 to x=atlas_width (in atlas coords)
-    // In screen coords: x_screen = x_atlas * 64 - offset_x
-    // So the line goes from (-offset_x) to (atlas_width*64 - offset_x)
-    // Center of line in screen x: (atlas_width*64 - offset_x) / 2 - offset_x/2... no
-    // Actually center is: atlas_width*32 - offset_x
-    let mut y = tile_size;
-    while y < atlas_height {
-        let screen_y = -(y as f32) * PIXEL_SCALE as f32 + viewport.offset_y;
-        let line_width = atlas_width * PIXEL_SCALE as f32;
-        // Center the line horizontally with the atlas
-        // Left of atlas at screen_x = -offset_x, right at screen_x = atlas_width*64 - offset_x
-        // Middle: (-offset_x + atlas_width*64 - offset_x) / 2 = atlas_width*32 - offset_x
-        let center_x = atlas_width * PIXEL_SCALE as f32 / 2.0 - viewport.offset_x;
-        
-        // Spawn a horizontal line sprite (wide and thin)
+    // Horizontal grid lines - at each tile boundary (y = tile_size, 2*tile_size, ...)
+    let mut y_atlas = tile_size;
+    while y_atlas < atlas_height {
+        let screen_y = -(y_atlas as f32) * PIXEL_SCALE as f32 + viewport.offset_y;
+        // Line width matches atlas width
         commands.spawn((
-            Sprite::from_color(Color::Srgba(Srgba::new(0.5, 0.5, 0.5, 0.5)), Vec2::new(line_width, 1.0)),
-            Transform::from_xyz(center_x, screen_y, 0.1),
-            GridLine { is_vertical: false, position: y },
+            Sprite::from_color(grid_color, Vec2::new(atlas_width_screen, grid_thickness)),
+            Transform::from_xyz(0.0, screen_y, 0.1),
+            GridLine { is_vertical: false, position: y_atlas },
         ));
-        y += tile_size;
+        y_atlas += tile_size;
     }
 }
 
