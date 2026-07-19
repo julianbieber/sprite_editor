@@ -95,9 +95,11 @@ fn update_viewport_rendering(
             // Then subtract viewport offset (screen pixels)
             let screen_x = start_x + (x as f32 + 0.5) * PIXEL_SCALE as f32 - viewport.offset_x;
             
-            // Flip y: atlas (0,0) is top-left, Bevy screen has y-up with center at 0
-            // Pixel center: -y * PIXEL_SCALE (from top) + PIXEL_SCALE/2 (center) + offset_y
-            let screen_y = -((y as f32) + 0.5) * PIXEL_SCALE as f32 + PIXEL_SCALE as f32 / 2.0 + viewport.offset_y;
+            // In Bevy Camera2d: screen top is at window_height/2, center at 0, bottom at -window_height/2
+            // Atlas (0,0) is top-left, so pixel (0,0) top edge should be at screen top (window_height/2)
+            // Since sprite is center-anchored: pixel (0,0) center = window_height/2 - PIXEL_SCALE/2
+            // For y=n: pixel center = window_height/2 - (n + 0.5) * PIXEL_SCALE
+            let screen_y = window.height() / 2.0 - (y as f32 + 0.5) * PIXEL_SCALE as f32 + viewport.offset_y;
 
             commands.spawn((
                 Sprite::from_color(
@@ -139,8 +141,9 @@ fn update_grid_lines(
     let grid_thickness = 2.0;
     let grid_color = Color::Srgba(Srgba::new(0.3, 0.3, 0.3, 0.8));
 
-    // Vertical grid lines
-    let center_y = viewport.offset_y - atlas_height_screen / 2.0;
+    // Vertical grid lines - centered at atlas vertical center
+    let atlas_top_y = window.height() / 2.0 - atlas_height_screen / 2.0 + viewport.offset_y;
+    let center_y = atlas_top_y - atlas_height_screen / 2.0;
     let mut x_atlas = 0.0;
     while x_atlas <= atlas_width {
         let screen_x = start_x + x_atlas * PIXEL_SCALE as f32 - viewport.offset_x;
@@ -156,7 +159,8 @@ fn update_grid_lines(
     let center_x = start_x + atlas_width_screen / 2.0 - viewport.offset_x;
     let mut y_atlas = 0.0;
     while y_atlas <= atlas_height {
-        let screen_y = -(y_atlas as f32) * PIXEL_SCALE as f32 + viewport.offset_y;
+        // Match the pixel y-coordinate system: screen_y = window_height/2 - (y + 0.5) * PIXEL_SCALE + offset_y
+        let screen_y = window.height() / 2.0 - (y_atlas as f32 + 0.5) * PIXEL_SCALE as f32 + viewport.offset_y;
         commands.spawn((
             Sprite::from_color(grid_color, Vec2::new(atlas_width_screen, grid_thickness)),
             Transform::from_xyz(center_x, screen_y, 1.0),
@@ -184,17 +188,15 @@ fn handle_pixel_hover(
                 // Reverse the screen_x formula:
                 // screen_x = start_x + (x + 0.5) * PIXEL_SCALE - offset_x
                 // => (x + 0.5) * PIXEL_SCALE = screen_x - start_x + offset_x
-                // => x + 0.5 = (screen_x - start_x + offset_x) / PIXEL_SCALE
                 // => x = (screen_x - start_x + offset_x) / PIXEL_SCALE - 0.5
                 let atlas_x = ((world_position.x - start_x + viewport.offset_x) / PIXEL_SCALE as f32).floor() as u32;
                 
                 // Reverse the screen_y formula:
-                // screen_y = -(y + 0.5) * PIXEL_SCALE + PIXEL_SCALE/2 + offset_y
-                // => -(y + 0.5) * PIXEL_SCALE = screen_y - PIXEL_SCALE/2 - offset_y
-                // => y + 0.5 = -(screen_y - PIXEL_SCALE/2 - offset_y) / PIXEL_SCALE
-                // => y = -(screen_y - PIXEL_SCALE/2 - offset_y) / PIXEL_SCALE - 0.5
-                let atlas_y = (-world_position.y + PIXEL_SCALE as f32 / 2.0 + viewport.offset_y) / PIXEL_SCALE as f32;
-                let atlas_y = atlas_y.floor() as u32;
+                // screen_y = window_height/2 - (y + 0.5) * PIXEL_SCALE + offset_y
+                // => (y + 0.5) * PIXEL_SCALE = window_height/2 + offset_y - screen_y
+                // => y + 0.5 = (window_height/2 + offset_y - screen_y) / PIXEL_SCALE
+                // => y = (window_height/2 + offset_y - screen_y) / PIXEL_SCALE - 0.5
+                let atlas_y = ((window.height() / 2.0 + viewport.offset_y - world_position.y) / PIXEL_SCALE as f32 - 0.5).floor() as u32;
                 
                 if atlas.is_valid_atlas_pixel(atlas_x, atlas_y) {
                     hovered.atlas_x = Some(atlas_x);
