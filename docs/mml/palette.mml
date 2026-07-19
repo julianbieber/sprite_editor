@@ -1,0 +1,179 @@
+// palette.mml
+// Mental Model Language specification for the Color Palette System
+// Defines how colors are stored, selected, and managed
+
+---  
+// ENTITIES: The core things that exist in this model
+
+entity Palette
+  purpose: "Collection of colors available for drawing, with selection state"
+  
+  fields:
+    colors: Vec<Color>
+      meaning: "Ordered list of RGBA colors"
+      constraints: [can be empty, but should have defaults on creation]
+      
+    selected_index: Option<usize>
+      meaning: "Index of the currently active color, or None if no selection"
+      constraints: [if Some, must be < colors.len()]
+      
+    default_colors: Vec<Color>
+      meaning: "Initial colors loaded on palette creation"
+      purpose: "Provides a starting set; can be extended by user"
+
+entity ColorSwatch
+  purpose: "Visual representation of a palette color in the UI"
+  
+  fields:
+    color: Color
+    index: usize
+    is_selected: bool
+    is_hovered: bool
+    
+  derived from: Palette
+  
+  ui_properties:
+    width: f32 = 48.0
+    height: f32 = 48.0
+    border_thickness: f32 = 2.0
+    border_color_selected: Color = Color::WHITE
+    border_color_normal: Color = Color::BLACK
+
+// ---
+// OPERATIONS: Things you can do to/with these entities
+
+operation CreatePalette() -> Palette
+  purpose: "Initialize a new palette with default colors"
+  effects:
+    - colors = default_colors (from assets/default_palette.json)
+    - selected_index = Some(0) (first color selected by default)
+  returns: new Palette
+
+operation CreatePaletteWithColors(colors: Vec<Color>) -> Palette
+  purpose: "Initialize palette with specific colors"
+  effects:
+    - colors = provided colors
+    - selected_index = Some(0) if colors not empty, else None
+
+operation SelectColor(palette: &mut Palette, index: usize)
+  purpose: "Set the active color for drawing"
+  preconditions: [index < palette.colors.len()]
+  effects:
+    - selected_index = Some(index)
+  
+operation AddColor(palette: &mut Palette, color: Color) -> usize
+  purpose: "Append a new color to the palette"
+  effects:
+    - colors.push(color)
+    - If selected_index was None, selected_index = Some(0)
+  returns: index of new color
+
+operation AddColorAt(palette: &mut Palette, color: Color, index: usize)
+  purpose: "Insert a new color at specific position"
+  preconditions: [index <= palette.colors.len()]
+  effects:
+    - colors.insert(index, color)
+    - Adjust selected_index if necessary
+
+operation RemoveColor(palette: &mut Palette, index: usize) -> Color
+  purpose: "Remove a color from the palette"
+  preconditions: [index < palette.colors.len()]
+  effects:
+    - colors.remove(index)
+    - If selected_index == Some(index), selected_index = None
+    - If selected_index > index, selected_index decremented by 1
+  returns: the removed Color
+
+operation ReorderColor(palette: &mut Palette, from: usize, to: usize)
+  purpose: "Move a color from one position to another"
+  preconditions: [from < palette.colors.len(), to < palette.colors.len()]
+  effects:
+    - Color removed from index `from`
+    - Color inserted at index `to`
+    - selected_index adjusted accordingly
+
+operation MoveColorUp(palette: &mut Palette, index: usize)
+  purpose: "Move color one position earlier in the list"
+  preconditions: [index > 0, index < palette.colors.len()]
+  effects: ReorderColor(palette, index, index - 1)
+
+operation MoveColorDown(palette: &mut Palette, index: usize)
+  purpose: "Move color one position later in the list"
+  preconditions: [index < palette.colors.len() - 1]
+  effects: ReorderColor(palette, index, index + 1)
+
+operation GetSelectedColor(palette: &Palette) -> Option<Color>
+  purpose: "Get the currently active color for drawing"
+  returns: Some(color) if selected_index is Some, else None
+
+operation SwapColors(palette: &mut Palette, a: usize, b: usize)
+  purpose: "Exchange positions of two colors"
+  preconditions: [a < palette.colors.len(), b < palette.colors.len()]
+  effects: colors[a] and colors[b] are swapped
+
+// ---
+// RELATIONSHIPS
+
+Palette used by Editor
+  purpose: "Editor uses palette's selected color for drawing"
+  
+Palette saved with Atlas
+  purpose: "Palette state persisted alongside atlas image"
+  
+Palette displayed by PaletteUI
+  purpose: "UI renders color swatches from palette"
+
+Palette modified by History
+  purpose: "Color additions/removals/reorders are undoable"
+
+// ---
+// STATES
+
+state Palette
+  valid states:
+    - Empty: colors.is_empty() == true
+      note: "Should not occur with default palette, but possible"
+    - NonEmpty: colors.len() > 0
+      note: "Normal operating state"
+    
+  selected states:
+    - NothingSelected: selected_index == None
+    - ColorSelected(index): selected_index == Some(index)
+
+// ---
+// DEFAULT PALETTE
+
+// Default colors loaded on startup (from assets/default_palette.json)
+// Should include:
+// - Transparent (rgba(0,0,0,0))
+// - Basic colors: black, white, red, green, blue, yellow, cyan, magenta
+// - Common game colors: various grays, browns, etc.
+
+// ---
+// UI INTERACTIONS
+
+// Click on color swatch:
+//   - If already selected: no-op (or open color editor?)
+//   - If not selected: SelectColor(index)
+//   - Double-click: Open color picker to edit this color
+
+// Click on "Add Color" button:
+//   - Open color picker
+//   - On confirm: AddColor(chosen_color)
+//   - New color becomes selected
+
+// Click on "Remove Color" button for a swatch:
+//   - RemoveColor(index)
+//   - Next color becomes selected, or previous, or none
+
+// Drag-and-drop on swatches:
+//   - ReorderColor(from, to)
+
+// ---
+// NOTES
+
+// The palette is always saved with the atlas.
+// Each atlas file (.json) includes its palette data.
+// The active/selected color determines what color is used when clicking to draw.
+// Colors are stored as Bevy Color (RGBA, f32, 0.0-1.0).
+// Transparent is a valid and useful color (for erasing/clear pixels).

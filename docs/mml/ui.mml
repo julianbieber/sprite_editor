@@ -1,0 +1,365 @@
+// ui.mml
+// Mental Model Language specification for the Feathers UI
+// Defines the user interface structure and interactions
+
+---  
+// ENTITIES: The core UI components
+
+entity AppUI
+  purpose: "Root UI container for the entire editor"
+  
+  fields:
+    palette_panel: PalettePanel
+    viewport: AtlasViewport
+    status_bar: StatusBar
+    toolbar: ToolBar  // optional, may add later
+
+entity PalettePanel
+  purpose: "Left sidebar containing color palette swatches and controls"
+  
+  fields:
+    width: f32 = 200.0
+    swatches: Vec<ColorSwatchUI>
+    add_color_button: Button
+    scroll_container: ScrollContainer  // if palette grows beyond panel
+    
+  layout: "Vertical, top-to-bottom"
+  position: "Docked to left edge of window"
+
+entity ColorSwatchUI
+  purpose: "Clickable UI element representing a palette color"
+  
+  fields:
+    color: Color
+    index: usize
+    size: f32 = 48.0
+    padding: f32 = 4.0
+    border_width: f32 = 2.0
+    is_selected: bool
+    is_hovered: bool
+    
+  visual_states:
+    - Normal: border = dark gray, no glow
+    - Hovered: border = light gray, subtle glow
+    - Selected: border = white, thick border
+    
+  interactions:
+    - OnClick: SelectColor(index)
+    - OnDoubleClick: OpenColorPicker(color, index)
+    - OnRightClick: ShowContextMenu (remove, edit, etc.)
+    - OnDragStart: Begin drag for reordering
+    - OnDragOver: Show insert position indicator
+    - OnDrop: ReorderColor(from, to)
+
+entity AtlasViewport
+  purpose: "Main area displaying the sprite atlas with scrolling"
+  
+  fields:
+    atlas: Atlas  // reference to the atlas being displayed
+    pixel_scale: u32 = 64
+    background: CheckerboardBackground
+    grid_lines: Option<GridLines>  // optional tile boundaries
+    
+    // For click handling
+    hover_pixel: Option<(u32, u32)>  // highlighted pixel under cursor
+    
+  layout: "Fills remaining space after palette"
+  position: "To the right of palette panel"
+  
+  interactions:
+    - OnLeftClick: DrawPixel at cursor position
+    - OnMouseMove: Update hover_pixel
+    - OnMouseLeave: Clear hover_pixel
+
+entity CheckerboardBackground
+  purpose: "Visual indicator for transparent areas"
+  
+  fields:
+    square_size: f32 = 8.0  // size of each checker square in screen pixels
+    color_a: Color = Color::rgb(0.2, 0.2, 0.2)
+    color_b: Color = Color::rgb(0.3, 0.3, 0.3)
+
+entity GridLines
+  purpose: "Optional visual lines showing tile boundaries"
+  
+  fields:
+    color: Color = Color::rgba(1.0, 1.0, 1.0, 0.3)
+    line_width: f32 = 1.0
+    enabled: bool = false  // toggleable
+
+entity StatusBar
+  purpose: "Bottom bar showing current state information"
+  
+  fields:
+    height: f32 = 30.0
+    cursor_position: TextLabel
+    selected_color: TextLabel
+    zoom_level: TextLabel  // for future
+    undo_redo_status: TextLabel
+    
+  layout: "Horizontal, left-to-right"
+  position: "Docked to bottom of window"
+  
+  displays:
+    - "Cursor: (X, Y)" - current atlas pixel coordinates
+    - "Color: #RRGGBBAA" - current selected color
+    - "Undo: Yes/No | Redo: Yes/No"
+
+entity ToolBar
+  purpose: "Top bar with action buttons (may add later)"
+  
+  fields:
+    height: f32 = 40.0
+    buttons: Vec<ToolButton>
+    
+  layout: "Horizontal, left-to-right"
+  position: "Docked to top of window"
+
+entity ToolButton
+  purpose: "Button for toolbar actions"
+  
+  variants:
+    AddTile
+      icon: "+"
+      tooltip: "Add tile to the right"
+      action: AddTileToRight
+      
+    Undo
+      icon: "←"
+      tooltip: "Undo"
+      action: Undo
+      enabled: history.can_undo()
+      
+    Redo
+      icon: "→"
+      tooltip: "Redo"
+      action: Redo
+      enabled: history.can_redo()
+      
+    Save
+      icon: "💾"
+      tooltip: "Save"
+      action: SaveAtlas
+      
+    Load
+      icon: "📂"
+      tooltip: "Load"
+      action: LoadAtlas
+
+entity Button
+  purpose: "Generic clickable UI element"
+  
+  fields:
+    label: Option<String>
+    icon: Option<String>  // or Texture
+    width: f32
+    height: f32
+    is_enabled: bool = true
+    is_hovered: bool = false
+    is_pressed: bool = false
+    
+  visual_states:
+    - Normal: background = gray, text = white
+    - Hovered: background = light gray, text = white
+    - Pressed: background = dark gray, text = white
+    - Disabled: background = dark gray, text = gray, alpha = 0.5
+  
+  interactions:
+    - OnClick: Trigger action
+
+entity ColorPicker
+  purpose: "Modal dialog for selecting/editing a color"
+  
+  fields:
+    current_color: Color
+    color_index: Option<usize>  // None if adding new color
+    
+    // Color selection methods:
+    hue_slider: Slider
+    saturation_value_picker: BoxPicker
+    alpha_slider: Slider
+    hex_input: TextInput
+    rgba_inputs: (TextInput, TextInput, TextInput, TextInput)
+    
+    preview: ColorSwatchUI
+    ok_button: Button
+    cancel_button: Button
+    
+  interactions:
+    - OnOk: Return selected color
+    - OnCancel: Close without changes
+    
+  opened_by:
+    - Double-click on palette swatch
+    - Click on "Add Color" button
+
+entity ScrollContainer
+  purpose: "Container that enables scrolling when content overflows"
+  
+  fields:
+    content: Vec<UIElement>
+    scroll_position: f32 = 0.0
+    scrollbar: Scrollbar
+    
+  interactions:
+    - MouseWheel: Scroll content
+    - Drag scrollbar: Scroll content
+    - Click scrollbar arrows: Scroll by fixed amount
+
+entity Scrollbar
+  purpose: "Visual control for scrolling a ScrollContainer"
+  
+  fields:
+    is_horizontal: bool
+    position: f32  // 0.0 to 1.0
+    size: f32  // 0.0 to 1.0 (proportion of content visible)
+    
+  parts:
+    - Track: background bar
+    - Thumb: draggable handle
+    - Buttons: up/down or left/right arrows
+
+// ---
+// OPERATIONS: UI-specific operations
+
+operation RenderPalette(palette: &Palette) -> Vec<ColorSwatchUI>
+  purpose: "Create UI swatches from palette colors"
+  returns: List of ColorSwatchUI, one per color
+
+operation UpdatePaletteUI(palette_panel: &mut PalettePanel, palette: &Palette)
+  purpose: "Sync UI with palette state"
+  effects:
+    - Recreate swatches to match palette.colors
+    - Update selected state on swatches
+
+operation HandleColorSwatchClick(swatch: &ColorSwatchUI, palette: &mut Palette)
+  purpose: "Process click on a color swatch"
+  effects: palette.select_color(swatch.index)
+
+operation HandleViewportClick(viewport: &AtlasViewport, screen_x: f32, screen_y: f32, editor: &mut Editor)
+  purpose: "Process click in the atlas viewport"
+  effects:
+    - Convert screen coords to atlas coords
+    - If within bounds: editor.draw_pixel(atlas_x, atlas_y)
+
+operation HandleScrollKey(key: KeyCode, editor: &mut Editor)
+  purpose: "Process keyboard scrolling"
+  effects:
+    - if key == KeyCode::o_umlaut: editor.scroll_left()
+    - if key == KeyCode::Hash: editor.scroll_right()
+
+operation UpdateStatusBar(status_bar: &mut StatusBar, editor: &Editor)
+  purpose: "Refresh status bar with current state"
+  effects:
+    - cursor_position.text = format!("Cursor: ({}, {})", hover_x, hover_y)
+    - selected_color.text = format_color(editor.palette.get_selected_color())
+    - undo_redo_status.text = format!("Undo: {} | Redo: {}", 
+        if editor.history.can_undo() { "Yes" } else { "No" },
+        if editor.history.can_redo() { "Yes" } else { "No" })
+
+// ---
+// RELATIONSHIPS
+
+AppUI contains PalettePanel
+AppUI contains AtlasViewport
+AppUI contains StatusBar
+AppUI contains ToolBar (optional)
+
+PalettePanel contains many ColorSwatchUI
+PalettePanel contains AddColor Button
+
+AtlasViewport displays Atlas
+AtlasViewport contains CheckerboardBackground
+AtlasViewport contains GridLines (optional)
+
+StatusBar contains TextLabel
+ToolBar contains ToolButton
+
+ColorPicker is_modal over AppUI
+ScrollContainer contains various UIElement
+
+// ---
+// LAYOUT HIERARCHY
+
+// Window:
+// +--------------------------------------------------+
+// | ToolBar (optional)                               |  // height: 40
+// +--------------------------------------------------+
+// |                                                  |
+// | +--------------+--------------------------------+ |  // remaining height
+// | | PalettePanel |                                | |
+// | | (width: 200) |    AtlasViewport               | |
+// | |              |    (fills remaining space)    | |
+// | | +----------+ |                                | |
+// | | |Swatch 1| | |                                | |
+// | | +--------+ | |                                | |
+// | | |Swatch 2| | |                                | |
+// | | +--------+ | |      [Atlas pixels render     | |
+// | | |  ...   | | |       here at 64x64 each]      | |
+// | | +--------+ | |                                | |
+// | |[+ Add]   | |                                | |
+// | +--------------+--------------------------------+ |
+// |                                                  |
+// +--------------------------------------------------+
+// | StatusBar                                        |  // height: 30
+// +--------------------------------------------------+
+
+// ---
+// UI STATE MANAGEMENT
+
+// The UI is reactive: when underlying data changes, UI updates.
+// Pattern: After modifying atlas/palette/editor, trigger UI refresh.
+
+// Example flow:
+// 1. User clicks color swatch
+// 2. Palette.select_color(index) called
+// 3. Palette state changes
+// 4. On next frame, UpdatePaletteUI() called
+// 5. ColorSwatchUI visual states updated
+// 6. StatusBar updated to show new selected color
+
+// ---
+// STYLING GUIDELINES
+
+// Colors:
+// - Background: Dark theme (#1e1e1e to #2d2d2d)
+// - Text: Light gray (#cccccc)
+// - Accent: Teal/blue (#40a0c0)
+// - Highlight: White (#ffffff)
+
+// Spacing:
+// - Padding: 8px between elements
+// - Margin: 4px around elements
+// - Border radius: 4px for buttons/swatches
+
+// Typography:
+// - Font: Monospace for coordinates
+// - Size: 14px default, 12px for status
+
+// ---
+// FEATHERS-SPECIFIC NOTES
+
+// Feathers is a Bevy-native UI library.
+// Key concepts:
+// - Widget: A UI element (Button, Label, Container, etc.)
+// - Bundle: Collection of components for a widget
+// - Style: Visual appearance (colors, padding, margins)
+// - Tree: Hierarchical widget structure
+// - Signals: Event-driven interactions
+
+// We will use:
+// - feathers::prelude::* for core widgets
+// - Custom widgets for ColorSwatch, AtlasViewport
+// - Style overrides for theming
+
+// ---
+// RESPONSIVENESS
+
+// Window resize behavior:
+// - PalettePanel: Fixed width (200px), height fills window
+// - AtlasViewport: Width and height fill remaining space
+// - StatusBar: Width fills window, fixed height (30px)
+// - ToolBar: Width fills window, fixed height (40px)
+
+// Minimum window size: 800x600 (1 tile = 512x512 + palette = 712x512)
+// Recommended: 1024x768 or larger

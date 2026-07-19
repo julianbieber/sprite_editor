@@ -1,0 +1,25 @@
+[package]
+name = "bevy_sprite_editor"
+version = "0.1.0"
+edition = "2021"
+authors = ["jbieber"]
+description = "A Bevy-based editor for sprite atlases with color palette management"
+license = "MIT OR Apache-2.0"
+readme = "AGENTS.md"
+
+[dependencies]
+# Core engine with Feathers UI (built into Bevy 0.19)
+bevy = { version = "0.19", features = ["2d", "bevy_feathers"] }
+
+# Serialization for saving/loading
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Image handling for PNG save/load
+image = "0.25"
+
+[profile.dev]
+opt-level = 1  # Faster compilation for development
+
+[features]
+default = []

@@ -1,0 +1,204 @@
+// editor.mml
+// Mental Model Language specification for the Pixel Editor and Viewport
+// Defines the drawing system, viewport, and user interaction
+
+---  
+// ENTITIES: The core things that exist in this model
+
+entity Editor
+  purpose: "Orchestrates drawing operations and viewport management"
+  
+  fields:
+    atlas: Atlas
+      meaning: "The sprite atlas being edited"
+      
+    palette: Palette
+      meaning: "The color palette for drawing"
+      
+    viewport: Viewport
+      meaning: "Defines the visible region of the atlas"
+      
+    history: History
+      meaning: "Undo/redo stack for all editable actions"
+      
+    pixel_scale: u32
+      meaning: "Screen pixels per atlas pixel (default: 64)"
+      constraints: [must be > 0]
+
+entity Viewport
+  purpose: "Camera/window into the atlas, controlling what is visible on screen"
+  
+  fields:
+    offset_x: f32
+      meaning: "Horizontal offset in atlas pixels (negative = scrolled right)"
+      default: 0.0
+      
+    offset_y: f32
+      meaning: "Vertical offset in atlas pixels"
+      default: 0.0
+      
+    width: f32
+      meaning: "Visible width in atlas pixels"
+      derived: from window size and pixel_scale
+      
+    height: f32
+      meaning: "Visible height in atlas pixels"
+      derived: from window size and pixel_scale
+
+entity PixelRender
+  purpose: "Visual representation of a single atlas pixel on screen"
+  
+  fields:
+    atlas_x: u32
+    atlas_y: u32
+    screen_x: f32
+    screen_y: f32
+    width: f32 = 64.0
+    height: f32 = 64.0
+    color: Color
+
+// ---
+// OPERATIONS: Things you can do to/with these entities
+
+operation DrawPixel(editor: &mut Editor, atlas_x: u32, atlas_y: u32)
+  purpose: "Set the pixel at (x,y) to the currently selected palette color"
+  preconditions: [atlas_x < editor.atlas.total_width(), atlas_y < editor.atlas.total_height()]
+  effects:
+    - old_color = editor.atlas.get_pixel(atlas_x, atlas_y)
+    - new_color = editor.palette.get_selected_color() or transparent if None
+    - editor.atlas.set_pixel(atlas_x, atlas_y, new_color)
+    - history.record(SetPixel { position: (atlas_x, atlas_y), old_color, new_color })
+
+operation HandleViewportClick(editor: &mut Editor, screen_x: f32, screen_y: f32)
+  purpose: "Process a mouse click in the viewport area"
+  effects:
+    - Convert screen coordinates to atlas coordinates
+    - If within bounds: DrawPixel at that location
+
+operation ScrollLeft(editor: &mut Editor, amount: f32)
+  purpose: "Move viewport to show more of the atlas to the left"
+  effects:
+    - viewport.offset_x = (viewport.offset_x - amount).clamp(min, max)
+  
+operation ScrollRight(editor: &mut Editor, amount: f32)
+  purpose: "Move viewport to show more of the atlas to the right"
+  effects:
+    - viewport.offset_x = (viewport.offset_x + amount).clamp(min, max)
+
+operation ScreenToAtlasCoordinate(screen_x: f32, screen_y: f32, viewport: &Viewport, pixel_scale: u32) -> Option<(u32, u32)> 
+  purpose: "Convert screen pixel position to atlas pixel coordinates"
+  formula:
+    atlas_x = ((screen_x + viewport.offset_x) / pixel_scale as f32).floor() as u32
+    atlas_y = ((screen_y + viewport.offset_y) / pixel_scale as f32).floor() as u32
+  returns: Some((atlas_x, atlas_y)) if within atlas bounds, else None
+
+operation IsWithinViewport(atlas_x: u32, atlas_y: u32, viewport: &Viewport, atlas: &Atlas) -> bool
+  purpose: "Check if an atlas pixel is currently visible"
+  formula:
+    screen_x = atlas_x as f32 * pixel_scale - viewport.offset_x
+    screen_y = atlas_y as f32 * pixel_scale - viewport.offset_y
+    result = screen_x >= 0 && screen_x < viewport.width && screen_y >= 0 && screen_y < viewport.height
+
+operation ClampViewport(viewport: &mut Viewport, atlas: &Atlas, window_width: f32, window_height: f32)
+  purpose: "Ensure viewport cannot scroll past atlas boundaries"
+  effects:
+    - max_offset_x = (atlas.width_in_pixels() * pixel_scale - window_width).max(0.0)
+    - viewport.offset_x = viewport.offset_x.clamp(0.0, max_offset_x)
+    - viewport.offset_y = viewport.offset_y.clamp(0.0, max_offset_y)
+
+// ---
+// RELATIONSHIPS
+
+Editor contains Viewport
+  cardinality: one-to-one
+  
+Editor uses Atlas
+  cardinality: one-to-one
+  
+Editor uses Palette
+  cardinality: one-to-one
+  
+Editor uses History
+  cardinality: one-to-one
+
+Viewport displays Atlas
+  purpose: "Viewport shows a portion of the atlas"
+
+Editor responds to Input
+  purpose: "Mouse/keyboard inputs trigger editor operations"
+
+// ---
+// STATES
+
+state Editor
+  valid states:
+    - Idle: waiting for user input
+    - Drawing: mouse button held down, potentially drawing multiple pixels
+    - Panning: middle mouse drag to pan viewport (future)
+    - ColorPicking: eyedropper tool active (future)
+
+// ---
+// INPUT HANDLING
+
+// Mouse Input:
+//   - Left Click (viewport): DrawPixel at cursor position
+//   - Left Click (palette): SelectColor
+//   - Left Click (UI button): Trigger button action
+//   - Mouse Move: Update hover states
+//   - Mouse Wheel: Scroll viewport vertically (future)
+
+// Keyboard Input:
+//   - 'o umlaut' (\u00F6): ScrollLeft by tile_size * pixel_scale
+//   - '#': ScrollRight by tile_size * pixel_scale
+//   - 'a': AddTileToRight (TBD)
+//   - 'z': AddColor (TBD)
+//   - 'x': RemoveColor (TBD)
+//   - Ctrl+Z: Undo
+//   - Ctrl+Y: Redo
+
+// ---
+// RENDERING
+
+// Each atlas pixel is rendered as a 64x64 screen pixel rectangle.
+// The rectangle is filled with the pixel's color.
+// For transparent pixels: may show a checkerboard pattern or dimmed background.
+
+// Rendering order:
+// 1. Background (checkerboard for transparency)
+// 2. Atlas pixels (as colored rectangles)
+// 3. Grid lines (optional, to show tile boundaries)
+// 4. UI overlays (palette, buttons)
+// 5. Cursor/highlight (showing which pixel is under mouse)
+
+// ---
+// COORDINATE SYSTEMS
+
+// Atlas Coordinates: (x, y) where x,y are pixel positions in the atlas (0 = top-left)
+//   Range: 0 <= x < width_in_pixels, 0 <= y < height_in_pixels
+//
+// Tile Coordinates: (tile_x, tile_y) where each is a tile index
+//   Range: 0 <= tile_x < width_in_tiles, 0 <= tile_y < height_in_tiles
+//
+// Screen Coordinates: (x, y) in screen pixels (Bevy's window coordinates)
+//   Origin: bottom-left (Bevy default) or top-left (TBD)
+//
+// Viewport Coordinates: same as screen, but relative to viewport origin
+
+// Conversion:
+//   atlas_pixel_x = tile_x * tile_size + pixel_in_tile_x
+//   screen_x = (atlas_pixel_x * pixel_scale) - viewport.offset_x
+
+// ---
+// NOTES
+
+// In v1, the editor only supports:
+// - Single-pixel drawing on left click
+// - Horizontal scrolling with o-umlaut and # keys
+// - No zoom (each pixel is fixed at 64x64 screen pixels)
+// - No tools other than pencil (eraser = transparent color)
+
+// The viewport offset is in atlas pixels, not screen pixels.
+// This makes scrolling by tile boundaries straightforward.
+
+// When the atlas grows (adding tiles), the viewport may need to adjust
+// to keep the user's focus point visible.

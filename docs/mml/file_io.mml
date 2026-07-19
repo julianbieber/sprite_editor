@@ -1,0 +1,331 @@
+// file_io.mml
+// Mental Model Language specification for File Save/Load System
+// Defines how atlases and palettes are persisted to disk
+
+---  
+// ENTITIES: The core file-related things
+
+entity ProjectFile
+  purpose: "A saved sprite atlas project consisting of multiple files"
+  
+  components:
+    image_file: PngFile  // The visual pixel data
+    metadata_file: JsonFile  // Atlas dimensions, palette, etc.
+    
+  naming_convention:
+    - If user saves as "my_sprites.atlas":
+      - image_file = "my_sprites.png"
+      - metadata_file = "my_sprites.atlas.json"
+    - Or single directory:
+      - my_sprites/
+        - image.png
+        - metadata.json
+
+entity PngFile
+  purpose: "Portable Network Graphics file containing atlas pixel data"
+  
+  fields:
+    path: PathBuf
+    width: u32  // total width in pixels (width_in_tiles * tile_size)
+    height: u32  // total height in pixels (height_in_tiles * tile_size)
+    data: Vec<u8>  // RGBA8 pixel data, row-major
+    
+  encoding:
+    - 8 bits per channel (R, G, B, A)
+    - Premultiplied alpha: No (straight alpha)
+    - Compression: Default PNG compression
+
+entity JsonFile
+  purpose: "JSON file containing metadata that PNG cannot store"
+  
+  fields:
+    path: PathBuf
+    data: AtlasMetadata
+    
+  format: "Pretty-printed JSON for human readability"
+
+entity AtlasMetadata
+  purpose: "Structured data saved alongside the PNG"
+  
+  fields:
+    version: String
+      meaning: "File format version for forward compatibility"
+      default: "1.0"
+      
+    tile_size: u32
+      meaning: "Size of each square tile in pixels"
+      
+    width_in_tiles: u32
+      meaning: "Number of tiles wide"
+      
+    height_in_tiles: u32
+      meaning: "Number of tiles tall"
+      
+    palette: PaletteData
+      meaning: "The color palette associated with this atlas"
+      
+    created_at: String
+      meaning: "ISO 8601 timestamp of creation"
+      
+    modified_at: String
+      meaning: "ISO 8601 timestamp of last modification"
+
+entity PaletteData
+  purpose: "Serializable representation of the color palette"
+  
+  fields:
+    colors: Vec<ColorData>
+      meaning: "List of colors in order"
+      
+    selected_index: Option<usize>
+      meaning: "Which color was selected when saved"
+
+entity ColorData
+  purpose: "Serializable color representation"
+  
+  fields:
+    r: f32
+    g: f32
+    b: f32
+    a: f32
+    
+  constraints: [0.0 <= r,g,b,a <= 1.0]
+  
+  serialization_format:
+    json: { "r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0 }
+
+// ---
+// OPERATIONS: File operations
+
+operation SaveProject(editor: &Editor, path: &Path) -> Result<(), FileError>
+  purpose: "Save the current atlas and palette to disk"
+  preconditions: [path is writable, path parent directory exists]
+  effects:
+    - Determine output paths (image + json)
+    - Convert Atlas to PNG data
+    - Convert Atlas + Palette to JSON metadata
+    - Write PNG file
+    - Write JSON file
+  returns: Ok(()) on success, Err on any failure
+
+operation SaveProjectAs(editor: &Editor, path: &Path) -> Result<(), FileError>
+  purpose: "Save project to a new location (user selects path)"
+  effects: Same as SaveProject
+
+operation LoadProject(path: &Path) -> Result<Editor, FileError>
+  purpose: "Load a saved project from disk"
+  preconditions: [path exists, path has both .png and .json files]
+  effects:
+    - Read PNG file and create Atlas
+    - Read JSON file and extract metadata
+    - Create Palette from metadata
+    - Create History (empty, or from metadata if saved)
+    - Create Viewport (reset to default)
+  returns: Editor with loaded state, or error
+
+operation ExportAtlas(editor: &Editor, path: &Path) -> Result<(), FileError>
+  purpose: "Export just the atlas image (without metadata)"
+  effects:
+    - Convert Atlas to PNG
+    - Write to path
+  
+operation ImportImage(path: &Path) -> Result<Atlas, FileError>
+  purpose: "Import an existing PNG as a new atlas"
+  effects:
+    - Read PNG
+    - Create Atlas with tile_size (user specified or auto-detected)
+    - Default to 1 tile if dimensions don't divide evenly
+
+operation AutoSave(editor: &Editor) -> Result<(), FileError>
+  purpose: "Automatically save to a temp location"
+  effects:
+    - Save to temporary file in OS temp directory
+    - Used for crash recovery (future)
+
+operation GetDefaultSavePath() -> PathBuf
+  purpose: "Get the default directory for saving projects"
+  returns: Platform-specific documents/ projects directory
+
+operation ShowSaveDialog(current_path: Option<&Path>) -> Option<PathBuf>
+  purpose: "Open native file save dialog"
+  uses: native-dialog crate or platform-specific API
+  returns: Selected path or None if cancelled
+
+operation ShowLoadDialog() -> Option<PathBuf>
+  purpose: "Open native file load dialog"
+  uses: native-dialog crate or platform-specific API
+  returns: Selected path or None if cancelled
+
+// ---
+// RELATIONSHIPS
+
+ProjectFile represents Editor
+  purpose: "File on disk corresponds to Editor in memory"
+
+PngFile stores Atlas.pixels
+  purpose: "Visual data is stored in PNG"
+
+JsonFile stores Atlas.metadata + Palette
+  purpose: "Non-visual data is stored in JSON"
+
+AtlasMetadata describes Atlas + Palette
+
+// ---
+// FILE STRUCTURE EXAMPLE
+
+// Directory: projects/my_game/
+// File: projects/my_game/sprites.atlas.json
+```json
+{
+  "version": "1.0",
+  "tile_size": 8,
+  "width_in_tiles": 3,
+  "height_in_tiles": 1,
+  "palette": {
+    "colors": [
+      {"r": 0.0, "g": 0.0, "b": 0.0, "a": 0.0},
+      {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0},
+      {"r": 0.0, "g": 1.0, "b": 0.0, "a": 1.0},
+      {"r": 0.0, "g": 0.0, "b": 1.0, "a": 1.0}
+    ],
+    "selected_index": 1
+  },
+  "created_at": "2026-07-19T10:00:00Z",
+  "modified_at": "2026-07-19T10:30:00Z"
+}
+```
+
+// File: projects/my_game/sprites.png
+// - 24x8 pixel PNG image (3 tiles * 8 pixels wide, 1 tile * 8 pixels tall)
+// - RGBA8 format
+// - Transparent background where alpha = 0
+
+// ---
+// CONVERSION OPERATIONS
+
+operation AtlasToPngData(atlas: &Atlas) -> Vec<u8>
+  purpose: "Convert atlas pixels to raw RGBA8 bytes"
+  formula:
+    For each pixel in atlas (row-major):
+      r = (color.r() * 255.0) as u8
+      g = (color.g() * 255.0) as u8
+      b = (color.b() * 255.0) as u8
+      a = (color.a() * 255.0) as u8
+  returns: Flat byte array
+
+operation PngDataToAtlas(data: &[u8], width: u32, height: u32, tile_size: u32) -> Atlas
+  purpose: "Convert PNG data to Atlas"
+  formula:
+    For each pixel in data (RGBA8, row-major):
+      color = Color::rgba_u8(r, g, b, a)
+    width_in_tiles = width / tile_size
+    height_in_tiles = height / tile_size
+  returns: Atlas with pixels
+
+operation AtlasToMetadata(atlas: &Atlas, palette: &Palette) -> AtlasMetadata
+  purpose: "Extract metadata from editor state"
+  returns: AtlasMetadata with current values
+
+operation MetadataToEditor(metadata: &AtlasMetadata) -> (Atlas, Palette)
+  purpose: "Reconstruct editor state from metadata"
+  returns: Tuple of Atlas and Palette
+
+// ---
+// ERROR TYPES
+
+enum FileError
+  PngWriteError(String)
+  PngReadError(String)
+  JsonWriteError(String)
+  JsonReadError(String)
+  JsonParseError(String)
+  FileNotFound(PathBuf)
+  InvalidFileFormat(String)
+  IoError(std::io::Error)
+  VersionMismatch(String)  // File version != current version
+
+// ---
+// VALIDATION
+
+operation ValidateProjectFiles(image_path: &Path, metadata_path: &Path) -> bool
+  purpose: "Check if both required files exist and are compatible"
+  checks:
+    - image_path.exists()
+    - metadata_path.exists()
+    - Image dimensions match metadata (width = width_in_tiles * tile_size, etc.)
+
+operation ValidateMetadata(metadata: &AtlasMetadata) -> Result<(), String>
+  purpose: "Check metadata for validity"
+  checks:
+    - version is supported
+    - tile_size > 0
+    - width_in_tiles > 0
+    - height_in_tiles > 0
+    - All palette colors have valid RGBA values
+
+// ---
+// SAVE/LOAD FLOW
+
+// Save Flow:
+// 1. User triggers save (Ctrl+S or menu)
+// 2. If new project: ShowSaveDialog
+// 3. Convert Atlas to PNG data
+// 4. Convert Atlas+Palette to JSON metadata
+// 5. Write PNG file
+// 6. Write JSON file
+// 7. On error: Show error dialog, keep original
+// 8. On success: Update editor's current_path
+
+// Load Flow:
+// 1. User triggers load (Ctrl+O or menu)
+// 2. ShowLoadDialog
+// 3. Validate project files exist
+// 4. Read PNG file
+// 5. Read JSON file
+// 6. Parse and validate metadata
+// 7. Convert PNG to Atlas
+// 8. Convert JSON to Palette
+// 9. On error: Show error dialog, keep current state
+// 10. On success: Replace editor state with loaded state
+
+// ---
+// DEFAULT PALETTE FILE
+
+// Location: assets/default_palette.json
+// Used when creating new projects
+// Contains common colors for sprite editing
+
+// ---
+// DEPENDENCIES NEEDED
+
+// For PNG handling:
+// - image = "0.25" crate for encoding/decoding PNG
+
+// For JSON handling:
+// - serde = "1.0" for serialization
+// - serde_json = "1.0" for JSON format
+
+// For file dialogs (optional, can use Bevy's window API or platform-specific):
+// - native-dialog = "0.6" for cross-platform file dialogs
+
+// ---
+// NOTES
+
+// The PNG + JSON split allows:
+// - Viewing the atlas image in any image viewer
+// - Editing the atlas in external tools (with caveats)
+// - Easy version control (JSON is diff-friendly)
+// - Separation of visual data from metadata
+
+// If a user opens the PNG in an external editor and saves it:
+// - The JSON metadata may become out of sync
+// - We should warn on load if image dimensions don't match metadata
+
+// Future: Could add a single-file format (e.g., .atlas binary) but PNG+JSON
+// is more interoperable and debuggable.
+
+// For v1, we do NOT save:
+// - Undo/redo history
+// - Viewport position
+// - Window size/position
+// These can be added in future versions.

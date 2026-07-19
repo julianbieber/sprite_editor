@@ -1,0 +1,126 @@
+// atlas.mml
+// Mental Model Language specification for the Sprite Atlas
+// This file defines the conceptual model for how the atlas is structured and manipulated
+
+---  
+// ENTITIES: The core things that exist in this model
+
+entity Atlas
+  purpose: "The container for all tile and pixel data being edited"
+  
+  fields:
+    tile_size: u32
+      meaning: "Number of pixels per side of each square tile (default: 8)"
+      constraints: [must be > 0, must be <= 128]
+      
+    width_in_tiles: u32
+      meaning: "Number of tiles horizontally in the atlas"
+      constraints: [must be >= 1]
+      
+    height_in_tiles: u32
+      meaning: "Number of tiles vertically in the atlas"
+      constraints: [must be >= 1]
+      default: 1
+      
+    pixels: Vec<Color>
+      meaning: "Flat array of all pixel colors, row-major order, per-tile"
+      layout: "[tile(0,0) row 0, tile(0,0) row 1..., tile(1,0) row 0...]"
+      
+  invariants:
+    - pixels.len() == width_in_tiles * height_in_tiles * tile_size * tile_size
+    - All Color values are valid RGBA (0.0-1.0)
+
+entity Tile
+  purpose: "A single square region within the atlas"
+  
+  fields:
+    x: u32  // tile column index (0 = leftmost)
+    y: u32  // tile row index (0 = topmost)
+    
+  derived from: Atlas
+  
+  operations:
+    get_pixel(x: u32, y: u32) -> Color
+      contract: "0 <= x,y < tile_size"
+      
+    set_pixel(x: u32, y: u32, color: Color)
+      contract: "0 <= x,y < tile_size"
+
+entity Pixel
+  purpose: "A single colorable unit within a tile"
+  
+  fields:
+    x: u32  // pixel column within tile (0 = leftmost)
+    y: u32  // pixel row within tile (0 = topmost)
+    color: Color
+    
+  derived from: Tile
+
+// ---
+// OPERATIONS: Things you can do to/with these entities
+
+operation CreateAtlas(tile_size: u32) -> Atlas
+  purpose: "Initialize a new atlas with default values"
+  preconditions: [tile_size > 0]
+  effects:
+    - width_in_tiles = 1
+    - height_in_tiles = 1
+    - pixels = Vec of (tile_size * tile_size) transparent colors
+  returns: new Atlas
+
+operation AddTileToRight(atlas: &mut Atlas)
+  purpose: "Append a new transparent tile to the right side of the atlas"
+  effects:
+    - width_in_tiles += 1
+    - pixels extended by (tile_size * tile_size) transparent colors
+    - New tile is fully transparent
+  
+operation GetPixel(atlas: &Atlas, tile_x: u32, tile_y: u32, pixel_x: u32, pixel_y: u32) -> Color
+  purpose: "Retrieve the color of a specific pixel"
+  preconditions: [tile_x < width_in_tiles, tile_y < height_in_tiles, pixel_x < tile_size, pixel_y < tile_size]
+  
+operation SetPixel(atlas: &mut Atlas, tile_x: u32, tile_y: u32, pixel_x: u32, pixel_y: u32, color: Color)
+  purpose: "Set the color of a specific pixel"
+  preconditions: [tile_x < width_in_tiles, tile_y < height_in_tiles, pixel_x < tile_size, pixel_y < tile_size]
+  effects: pixels[index] = color
+  
+operation PixelIndex(atlas: &Atlas, tile_x: u32, tile_y: u32, pixel_x: u32, pixel_y: u32) -> usize
+  purpose: "Calculate the flat index of a pixel in the pixels array"
+  formula: (tile_y * atlas.width_in_tiles * atlas.tile_size + tile_x * atlas.tile_size + pixel_y) * atlas.tile_size + pixel_x
+
+operation ScreenToAtlas(screen_x: f32, screen_y: f32, viewport: &Viewport) -> Option<(u32, u32, u32, u32)> 
+  purpose: "Convert screen coordinates to atlas tile+pixel coordinates"
+  returns: Some((tile_x, tile_y, pixel_x, pixel_y)) or None if out of bounds
+
+// ---
+// RELATIONSHIPS
+
+Atlas contains many Tile
+  cardinality: one-to-many
+  Tile identified by (x, y) within Atlas
+
+Tile contains many Pixel  
+  cardinality: one-to-many
+  Pixel identified by (x, y) within Tile
+
+Atlas used by Editor
+Atlas saved by FileIO
+Atlas modified by History
+
+// ---
+// STATES
+
+state Atlas
+  valid states:
+    - Empty: width_in_tiles = 0 (should never happen per invariants)
+    - SingleTile: width_in_tiles = 1, height_in_tiles = 1
+    - MultiTile: width_in_tiles > 1 or height_in_tiles > 1
+
+// ---
+// NOTES
+
+// The atlas is always a grid of square tiles.
+// Tiles are always contiguous (no gaps).
+// The atlas can only grow to the right (width) in v1.
+// Pixel (0,0) of each tile is the top-left pixel of that tile.
+// The entire pixels array can be converted to a Bevy Image for rendering/saving.

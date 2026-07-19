@@ -1,0 +1,226 @@
+// history.mml
+// Mental Model Language specification for the Undo/Redo System
+// Tracks all mutable operations for reversal
+
+---  
+// ENTITIES: The core things that exist in this model
+
+entity History
+  purpose: "Tracks all user actions that modify state, enabling undo/redo"
+  
+  fields:
+    undo_stack: VecDeque<Action>
+      meaning: "Actions that can be undone (most recent at back)"
+      constraints: [max length = 100]
+      
+    redo_stack: VecDeque<Action>
+      meaning: "Actions that can be redone (most recent at back)"
+      constraints: [max length = 100]
+      
+    max_depth: usize
+      meaning: "Maximum number of actions to retain in history"
+      default: 100
+
+entity Action
+  purpose: "A record of a state-changing operation that can be reversed"
+  
+  variants:
+    SetPixel
+      fields:
+        position: (u32, u32)  // atlas pixel coordinates (x, y)
+        old_color: Color
+        new_color: Color
+      
+      reverse: SetPixel { position, old_color: new_color, new_color: old_color }
+      
+    AddTile
+      fields:
+        tile_x: u32  // the new tile's x index
+      
+      reverse: RemoveTile { tile_x }
+      
+    RemoveTile
+      fields:
+        tile_x: u32
+        saved_pixels: Vec<Color>  // pixels of the removed tile
+      
+      reverse: AddTileWithData { tile_x, pixels: saved_pixels }
+      
+    AddColor
+      fields:
+        color: Color
+        index: usize  // position where color was added
+      
+      reverse: RemoveColor { index }
+      
+    RemoveColor
+      fields:
+        color: Color
+        index: usize
+      
+      reverse: AddColorAt { color, index }
+      
+    ReorderColor
+      fields:
+        from: usize
+        to: usize
+      
+      reverse: ReorderColor { from: to, to: from }
+      
+    SetColor
+      fields:
+        index: usize
+        old_color: Color
+        new_color: Color
+      
+      reverse: SetColor { index, old_color: new_color, new_color: old_color }
+
+entity ActionRecord
+  purpose: "Wrapper for an action with metadata"
+  
+  fields:
+    action: Action
+    timestamp: std::time::Instant
+    description: String  // Human-readable description for debugging
+
+// ---
+// OPERATIONS: Things you can do to/with these entities
+
+operation RecordAction(history: &mut History, action: Action)
+  purpose: "Add a new action to the history, clearing redo stack"
+  effects:
+    - undo_stack.push_back(action)
+    - redo_stack.clear()
+    - If undo_stack.len() > max_depth: undo_stack.pop_front()
+
+operation Undo(history: &mut History, editor: &mut Editor) -> bool
+  purpose: "Reverse the most recent action"
+  preconditions: [undo_stack is not empty]
+  effects:
+    - action = undo_stack.pop_back()
+    - reverse_action = action.reverse()
+    - Apply reverse_action to editor
+    - redo_stack.push_back(action)
+  returns: true if undo was performed, false if stack was empty
+
+operation Redo(history: &mut History, editor: &mut Editor) -> bool
+  purpose: "Re-apply the most recently undone action"
+  preconditions: [redo_stack is not empty]
+  effects:
+    - action = redo_stack.pop_back()
+    - Apply action to editor
+    - undo_stack.push_back(action)
+  returns: true if redo was performed, false if stack was empty
+
+operation ApplyAction(editor: &mut Editor, action: &Action)
+  purpose: "Execute an action's effect on the editor state"
+  effects: Match on action variant and perform the operation
+    - SetPixel: editor.atlas.set_pixel(position.0, position.1, new_color)
+    - AddTile: editor.atlas.add_tile_to_right()
+    - RemoveTile: editor.atlas.remove_tile(tile_x)
+    - AddColor: editor.palette.add_color(color)
+    - RemoveColor: editor.palette.remove_color(index)
+    - ReorderColor: editor.palette.reorder(from, to)
+    - SetColor: editor.palette.set_color(index, new_color)
+
+operation ClearHistory(history: &mut History)
+  purpose: "Remove all actions from both stacks"
+  effects:
+    - undo_stack.clear()
+    - redo_stack.clear()
+
+operation CanUndo(history: &History) -> bool
+  purpose: "Check if undo is available"
+  returns: !history.undo_stack.is_empty()
+
+operation CanRedo(history: &History) -> bool
+  purpose: "Check if redo is available"
+  returns: !history.redo_stack.is_empty()
+
+// ---
+// RELATIONSHIPS
+
+History tracks Editor
+  purpose: "History records all state changes in the editor"
+  
+History used by UI
+  purpose: "UI enables/disables undo/redo buttons based on history state"
+
+Action references Atlas
+Action references Palette
+
+// ---
+// STATES
+
+state History
+  valid states:
+    - Empty: both stacks empty (initial state, or after clear)
+    - CanUndo: undo_stack has actions, redo_stack empty
+    - CanRedo: redo_stack has actions (after undo)
+    - CanBoth: both stacks have actions
+
+// ---
+// ACTION LIFECYCLE
+
+// 1. User performs action (e.g., draws pixel)
+// 2. Editor modifies state
+// 3. Editor calls history.record(action)
+// 4. Action pushed to undo_stack
+// 5. redo_stack cleared
+
+// On Undo:
+// 1. Pop from undo_stack
+// 2. Apply reverse to editor
+// 3. Push original action to redo_stack
+
+// On Redo:
+// 1. Pop from redo_stack
+// 2. Apply to editor
+// 3. Push to undo_stack
+
+// ---
+// DESIGN DECISIONS
+
+// Why VecDeque?
+// - Efficient pop from both ends
+// - Fixed max size (100) means we only need to pop from front when full
+// - VecDeque::pop_front() is O(1)
+
+// Why store old/new values in actions?
+// - Reversing is deterministic and doesn't require re-computing state
+// - Simple to implement
+// - Memory cost is acceptable (100 actions max)
+
+// Why clear redo on new action?
+// - Standard undo/redo behavior: new action branches history
+// - Redo stack becomes invalid after a new action
+
+// ---
+// FUTURE CONSIDERATIONS
+
+// Compression:
+// - Multiple SetPixel actions on same pixel could be compressed
+// - Sequence of SetPixel actions could be a "stroke" or "fill" action
+// - Not needed for v1 (100 depth is sufficient)
+
+// Grouping:
+// - Multiple actions could be grouped as a single undoable action
+// - E.g., "Draw Line" = multiple SetPixel actions
+// - Not needed for v1 (only single-pixel clicks)
+
+// ---
+// NOTES
+
+// All state-modifying operations MUST go through history recording.
+// Direct mutation of atlas/palette without recording breaks undo/redo.
+// The editor is responsible for calling history.record() after each action.
+
+// For v1, we track:
+// - Pixel color changes (SetPixel)
+// - Tile additions (AddTile)
+// - Color palette modifications (AddColor, RemoveColor, ReorderColor)
+
+// We do NOT track (for v1):
+// - Viewport scrolling
+// - Color selection (only palette modification)
+// - UI state changes
