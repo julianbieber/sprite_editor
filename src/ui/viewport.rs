@@ -62,11 +62,14 @@ fn setup_viewport(mut commands: Commands) {
 /// Update the viewport rendering
 fn update_viewport_rendering(
     editor: Res<EditorResource>,
+    windows: Query<&Window>,
     mut commands: Commands,
     pixel_query: Query<Entity, With<AtlasPixel>>,
 ) {
     let atlas = &editor.editor.atlas;
     let viewport = &editor.editor.viewport;
+    let window = windows.single().unwrap();
+    let window_width = window.width();
 
     for entity in pixel_query.iter() {
         commands.entity(entity).despawn();
@@ -75,27 +78,28 @@ fn update_viewport_rendering(
     let atlas_width = atlas.width_in_pixels();
     let atlas_height = atlas.height_in_pixels();
 
+    // Calculate the shift to align atlas with palette right edge
+    // Palette panel: centered at -window_width/2 + PALETTE_PANEL_WIDTH/2, width = PALETTE_PANEL_WIDTH
+    // Palette right edge is at: -window_width/2 + PALETTE_PANEL_WIDTH
+    // Atlas should start at this position (pixel 0,0 left edge)
+    // Since sprites are center-anchored, pixel (0,0) center is at: -window_width/2 + PALETTE_PANEL_WIDTH + PIXEL_SCALE/2
+    let palette_right_edge = -window_width / 2.0 + PALETTE_PANEL_WIDTH;
+    let atlas_x_shift = palette_right_edge + PIXEL_SCALE as f32 / 2.0;
+
     for y in 0..atlas_height {
         for x in 0..atlas_width {
             let pixel_color = atlas.get_pixel_at(x, y);
-            // Position viewport to the right of the palette panel
-            // Palette panel is at -PALETTE_PANEL_WIDTH/2 and is 200 wide, so it covers -200 to 0
-            // Viewport starts at 0 (right edge of palette)
-            let screen_x = x as f32 * PIXEL_SCALE as f32 - viewport.offset_x;
+            let screen_x = (x as f32) * PIXEL_SCALE as f32 + atlas_x_shift - viewport.offset_x;
             // Flip y-coordinate: atlas uses top-left origin, Bevy Camera2d has y-up
             // So we negate y to make atlas (0,0) appear at top
-            let screen_y = -(y as f32) * PIXEL_SCALE as f32 + viewport.offset_y;
-
-            // Bevy sprites are anchored at center by default, so we need to offset by half pixel size
-            // to position the top-left corner at (screen_x, screen_y)
-            let half_pixel = PIXEL_SCALE as f32 / 2.0;
+            let screen_y = -((y as f32) + 0.5) * PIXEL_SCALE as f32 + PIXEL_SCALE as f32 / 2.0 + viewport.offset_y;
 
             commands.spawn((
                 Sprite::from_color(
                     pixel_color,
                     Vec2::new(PIXEL_SCALE as f32, PIXEL_SCALE as f32),
                 ),
-                Transform::from_xyz(screen_x + half_pixel, screen_y - half_pixel, 0.0),
+                Transform::from_xyz(screen_x, screen_y, 0.0),
                 AtlasPixel {
                     atlas_x: x,
                     atlas_y: y,
@@ -108,12 +112,19 @@ fn update_viewport_rendering(
 /// Update grid lines to show tile boundaries
 fn update_grid_lines(
     editor: Res<EditorResource>,
+    windows: Query<&Window>,
     mut commands: Commands,
     grid_query: Query<Entity, With<GridLine>>,
 ) {
     let atlas = &editor.editor.atlas;
     let viewport = &editor.editor.viewport;
+    let window = windows.single().unwrap();
+    let window_width = window.width();
     let tile_size = atlas.tile_size as f32;
+
+    // Calculate the shift to align atlas with palette right edge
+    let palette_right_edge = -window_width / 2.0 + PALETTE_PANEL_WIDTH;
+    let atlas_x_shift = palette_right_edge + PIXEL_SCALE as f32 / 2.0;
 
     // Despawn old grid lines
     for entity in grid_query.iter() {
@@ -140,7 +151,7 @@ fn update_grid_lines(
 
     let mut x_atlas = 0.0;
     while x_atlas <= atlas_width {
-        let screen_x = x_atlas * PIXEL_SCALE as f32 - viewport.offset_x;
+        let screen_x = x_atlas * PIXEL_SCALE as f32 + atlas_x_shift - viewport.offset_x;
         commands.spawn((
             Sprite::from_color(grid_color, Vec2::new(grid_thickness, atlas_height_screen)),
             Transform::from_xyz(screen_x, center_y, 1.0),
@@ -154,7 +165,7 @@ fn update_grid_lines(
 
     // Horizontal grid lines - at each tile boundary including top edge (y = 0, tile_size, 2*tile_size, ...)
     // X position: center of atlas
-    let center_x = atlas_width_screen / 2.0 - viewport.offset_x;
+    let center_x = atlas_width_screen / 2.0 + atlas_x_shift - viewport.offset_x;
 
     let mut y_atlas = 0.0;
     while y_atlas <= atlas_height {
@@ -173,30 +184,37 @@ fn update_grid_lines(
 
 /// Handle mouse hover
 fn handle_pixel_hover(
+    editor: Res<EditorResource>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
-    pixel_query: Query<(&AtlasPixel, &Transform)>,
     mut hovered: ResMut<HoveredPixel>,
 ) {
+    let viewport = &editor.editor.viewport;
+    
     if let Ok(window) = windows.single() {
+        let window_width = window.width();
+        
+        // Calculate the shift to align atlas with palette right edge
+        let palette_right_edge = -window_width / 2.0 + PALETTE_PANEL_WIDTH;
+        let atlas_x_shift = palette_right_edge + PIXEL_SCALE as f32 / 2.0;
+        
         if let Some(cursor_position) = window.cursor_position() {
             if let Ok((camera, camera_transform)) = camera_q.single() {
                 if let Ok(world_position) =
                     camera.viewport_to_world_2d(camera_transform, cursor_position)
                 {
-                    for (pixel, transform) in pixel_query.iter() {
-                        let pixel_size = PIXEL_SCALE as f32;
-                        let pixel_x = transform.translation.x - pixel_size / 2.0; // Left edge
-                        let pixel_y = transform.translation.y - pixel_size / 2.0; // Top edge
-                        if world_position.x >= pixel_x
-                            && world_position.x < pixel_x + pixel_size
-                            && world_position.y >= pixel_y
-                            && world_position.y < pixel_y + pixel_size
-                        {
-                            hovered.atlas_x = Some(pixel.atlas_x);
-                            hovered.atlas_y = Some(pixel.atlas_y);
-                            return;
-                        }
+                    // Convert world position to atlas coordinates
+                    let relative_x = world_position.x - atlas_x_shift + viewport.offset_x;
+                    let relative_y = -world_position.y + viewport.offset_y;
+                    
+                    let atlas_x = (relative_x / PIXEL_SCALE as f32).floor() as u32;
+                    let atlas_y = (relative_y / PIXEL_SCALE as f32).floor() as u32;
+                    
+                    let atlas = &editor.editor.atlas;
+                    if atlas.is_valid_atlas_pixel(atlas_x, atlas_y) {
+                        hovered.atlas_x = Some(atlas_x);
+                        hovered.atlas_y = Some(atlas_y);
+                        return;
                     }
                 }
             }

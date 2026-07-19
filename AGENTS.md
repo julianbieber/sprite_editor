@@ -291,6 +291,7 @@ image = "0.25"
 ---
 
 *Last updated: 2026-07-19*
-*Recent fix: Window positioning and viewport y-axis clamping*
+*Recent fix: Viewport x-axis alignment with palette panel - atlas now starts at palette right edge*
+*Previous fix: Window positioning and viewport y-axis clamping*
 *Project lead: jbieber*
 *Status: MVP functional - core editing features working*

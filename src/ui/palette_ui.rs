@@ -39,9 +39,9 @@ fn setup_palette_panel(mut commands: Commands, windows: Query<&Window>) {
     let window_width = window.width();
     let window_height = window.height();
     
-    // Position panel at left edge with small margin
-    // x = -window_width/2 + margin + panel_width/2
-    let panel_x = -window_width / 2.0 + 10.0 + PALETTE_PANEL_WIDTH / 2.0;
+    // Position panel at left edge of screen
+    // Panel left edge at x = -window_width/2, so panel center at x = -window_width/2 + panel_width/2
+    let panel_x = -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0;
     // Position at top with margin
     // y = window_height/2 - margin - panel_height/2 (but we don't know height yet)
     // For now, position at top with 10px margin
@@ -72,8 +72,8 @@ fn update_palette_display(
     let panel_entity = if let Ok(entity) = panel_query.single() {
         entity
     } else {
-        // Create panel at left edge
-        let panel_x = -window_width / 2.0 + 10.0 + PALETTE_PANEL_WIDTH / 2.0;
+        // Create panel at left edge of screen
+        let panel_x = -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0;
         let panel_y = window_height / 2.0 - 10.0;
         commands.spawn((
             Sprite::from_color(Color::Srgba(Srgba::new(0.15, 0.15, 0.15, 0.8)), Vec2::new(PALETTE_PANEL_WIDTH, 1000.0)),
