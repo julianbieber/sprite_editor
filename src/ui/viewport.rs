@@ -73,7 +73,9 @@ fn update_viewport_rendering(
             let pixel_color = atlas.get_pixel_at(x, y);
             // Offset viewport by palette panel width to prevent overlap
             let screen_x = x as f32 * PIXEL_SCALE as f32 - viewport.offset_x + PALETTE_PANEL_WIDTH / 2.0 + 10.0;
-            let screen_y = y as f32 * PIXEL_SCALE as f32 - viewport.offset_y;
+            // Flip y-coordinate: atlas uses top-left origin, Bevy Camera2d has y-up
+            // So we negate y to make atlas (0,0) appear at top
+            let screen_y = -(y as f32) * PIXEL_SCALE as f32 + viewport.offset_y;
             
             commands.spawn((
                 Sprite::from_color(pixel_color, Vec2::new(PIXEL_SCALE as f32, PIXEL_SCALE as f32)),
