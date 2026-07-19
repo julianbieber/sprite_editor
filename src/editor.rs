@@ -42,12 +42,12 @@ impl Viewport {
         }
     }
 
-    /// Scroll the viewport left by a certain amount (in atlas pixels)
+    /// Scroll the viewport left by a certain amount (in screen pixels)
     pub fn scroll_left(&mut self, amount: f32) {
         self.offset_x = (self.offset_x - amount).max(0.0);
     }
 
-    /// Scroll the viewport right by a certain amount (in atlas pixels)
+    /// Scroll the viewport right by a certain amount (in screen pixels)
     pub fn scroll_right(&mut self, amount: f32) {
         self.offset_x += amount;
     }
@@ -227,14 +227,14 @@ impl Viewport {
         self.offset_y = self.offset_y.clamp(min_offset_y, max_offset_y);
     }
 
-    /// Scroll by one tile to the left
+    /// Scroll by one tile to the left (in screen pixels)
     pub fn scroll_tile_left(&mut self) {
-        self.scroll_left(DEFAULT_TILE_SIZE as f32);
+        self.scroll_left(DEFAULT_TILE_SIZE as f32 * PIXEL_SCALE as f32);
     }
 
-    /// Scroll by one tile to the right
+    /// Scroll by one tile to the right (in screen pixels)
     pub fn scroll_tile_right(&mut self) {
-        self.scroll_right(DEFAULT_TILE_SIZE as f32);
+        self.scroll_right(DEFAULT_TILE_SIZE as f32 * PIXEL_SCALE as f32);
     }
 }
 

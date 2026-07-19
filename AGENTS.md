@@ -291,7 +291,12 @@ image = "0.25"
 ---
 
 *Last updated: 2026-07-19*
-*Recent fix: Viewport x-axis alignment with palette panel - atlas now starts at palette right edge*
+*Recent fix: Complete rewrite of UI positioning system*
+  - Extracted position calculations into clear helper functions (panel_x, panel_y, atlas_start_x)
+  - Fixed palette panel: now properly sized to fit within screen with margin at bottom
+  - Fixed viewport scrolling: scroll_tile now moves by PIXEL_SCALE * tile_size screen pixels (512px per tile, not 8px)
+  - Fixed offset_x unit consistency: all calculations now use screen pixels
+  - Atlas starts exactly at palette right edge with no gap or overlap
 *Previous fix: Window positioning and viewport y-axis clamping*
 *Project lead: jbieber*
 *Status: MVP functional - core editing features working*

@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy::color::palettes::css;
-use crate::config::{COLOR_SWATCH_SIZE, PALETTE_PANEL_WIDTH, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT};
+use crate::config::{COLOR_SWATCH_SIZE, PALETTE_PANEL_WIDTH};
 use crate::editor::EditorResource;
 
 /// Marker component for the palette panel
@@ -17,6 +17,7 @@ pub struct ColorSwatch {
 
 const SWATCH_MARGIN: f32 = 4.0;
 const SWATCH_BORDER: f32 = 2.0;
+const TOP_MARGIN: f32 = 10.0;
 
 /// Plugin for the palette UI
 pub struct PaletteUiPlugin;
@@ -32,29 +33,40 @@ impl Plugin for PaletteUiPlugin {
     }
 }
 
-/// Setup the palette panel using Bevy's screen-relative positioning
-/// In Bevy Camera2d: (0,0) is center, left edge at -width/2, top edge at height/2
+/// Calculate palette panel x position
+/// Panel should be at left edge of screen
+/// In Bevy Camera2d: screen center is (0,0), left edge at -window_width/2
+/// Panel width is PALETTE_PANEL_WIDTH, so center at: -window_width/2 + PALETTE_PANEL_WIDTH/2
+fn panel_x(window_width: f32) -> f32 {
+    -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0
+}
+
+/// Calculate palette panel y position
+/// Panel height = window_height - TOP_MARGIN (leaving margin at bottom)
+/// Panel top edge should be at screen top: window_height/2
+/// So center_y = window_height/2 - panel_height/2
+///          = window_height/2 - (window_height - TOP_MARGIN)/2
+///          = TOP_MARGIN/2
+fn panel_y() -> f32 {
+    TOP_MARGIN / 2.0
+}
+
+/// Calculate palette panel height
+fn panel_height(window_height: f32) -> f32 {
+    // Leave TOP_MARGIN at top and bottom
+    window_height - TOP_MARGIN
+}
+
+/// Setup the palette panel
 fn setup_palette_panel(mut commands: Commands, windows: Query<&Window>) {
     let window = windows.single().unwrap();
-    let window_width = window.width();
-    let window_height = window.height();
+    let x = panel_x(window.width());
+    let y = panel_y();
+    let height = panel_height(window.height());
     
-    // Position panel at left edge of screen
-    // Panel left edge at x = -window_width/2, so panel center at x = -window_width/2 + panel_width/2
-    let panel_x = -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0;
-    
-    // Position at top of screen with margin
-    // In Bevy Camera2d: top edge of screen is at y = window_height/2
-    // Panel top edge at y = window_height/2 - margin, so panel center at y = window_height/2 - margin - panel_height/2
-    // For now, create panel with large enough height for many colors
-    let panel_height: f32 = window_height; // Full height of window
-    let margin = 10.0;
-    let panel_y = window_height / 2.0 - margin - panel_height / 2.0;
-    
-    // Create the panel as a sprite (background)
     commands.spawn((
-        Sprite::from_color(Color::Srgba(Srgba::new(0.15, 0.15, 0.15, 0.8)), Vec2::new(PALETTE_PANEL_WIDTH, panel_height)),
-        Transform::from_xyz(panel_x, panel_y, 0.0),
+        Sprite::from_color(Color::Srgba(Srgba::new(0.15, 0.15, 0.15, 0.8)), Vec2::new(PALETTE_PANEL_WIDTH, height)),
+        Transform::from_xyz(x, y, 0.0),
         PalettePanel,
     ));
 }
@@ -69,32 +81,28 @@ fn update_palette_display(
 ) {
     let palette = &editor.editor.palette;
     let window = windows.single().unwrap();
-    let window_width = window.width();
-    let window_height = window.height();
-    
+
     // Get or create the palette panel
     let panel_entity = if let Ok(entity) = panel_query.single() {
         entity
     } else {
-        // Create panel at left edge of screen
-        let panel_x = -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0;
-        let panel_height: f32 = window_height;
-        let margin = 10.0;
-        let panel_y = window_height / 2.0 - margin - panel_height / 2.0;
+        let x = panel_x(window.width());
+        let y = panel_y();
+        let height = panel_height(window.height());
         commands.spawn((
-            Sprite::from_color(Color::Srgba(Srgba::new(0.15, 0.15, 0.15, 0.8)), Vec2::new(PALETTE_PANEL_WIDTH, panel_height)),
-            Transform::from_xyz(panel_x, panel_y, 0.0),
+            Sprite::from_color(Color::Srgba(Srgba::new(0.15, 0.15, 0.15, 0.8)), Vec2::new(PALETTE_PANEL_WIDTH, height)),
+            Transform::from_xyz(x, y, 0.0),
             PalettePanel,
         )).id()
     };
-    
+
     // Despawn old swatches
     for entity in swatch_query.iter() {
         commands.entity(entity).despawn();
     }
-    
+
     let mut y_offset = 0.0;
-    
+
     for (index, color) in palette.colors.iter().enumerate() {
         let is_selected = palette.selected_index == Some(index);
         let swatch_size = COLOR_SWATCH_SIZE + SWATCH_BORDER * 2.0;
@@ -103,8 +111,10 @@ fn update_palette_display(
         } else {
             Color::Srgba(Srgba::new(0.4, 0.4, 0.4, 0.8))
         };
-        
-        // Position swatches relative to panel top-left
+
+        // Position swatches relative to panel center (which is at panel_y)
+        // First swatch at top: y = panel_y + panel_height/2 - swatch_size/2 - margin
+        // Then each subsequent swatch below it
         let border_entity = commands.spawn((
             Sprite::from_color(border_color, Vec2::new(swatch_size, swatch_size)),
             Transform::from_xyz(
@@ -114,16 +124,15 @@ fn update_palette_display(
             ),
             ColorSwatch { color_index: index },
         )).id();
-        
+
         let inner_color_entity = commands.spawn((
             Sprite::from_color(*color, Vec2::new(COLOR_SWATCH_SIZE, COLOR_SWATCH_SIZE)),
             Transform::from_xyz(0.0, 0.0, 0.1),
         )).id();
-        
-        // Make swatches children of the panel
+
         commands.entity(panel_entity).add_child(border_entity);
         commands.entity(border_entity).add_child(inner_color_entity);
-        
+
         y_offset += swatch_size + SWATCH_MARGIN * 2.0;
     }
 }
@@ -142,7 +151,10 @@ fn handle_swatch_selection(
                 if let Ok((camera, camera_transform)) = camera_q.single() {
                     if let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) {
                         for (swatch, global_transform, sprite) in swatch_query.iter() {
-                            let size = sprite.custom_size.unwrap_or(Vec2::new(COLOR_SWATCH_SIZE + SWATCH_BORDER * 2.0, COLOR_SWATCH_SIZE + SWATCH_BORDER * 2.0));
+                            let size = sprite.custom_size.unwrap_or(Vec2::new(
+                                COLOR_SWATCH_SIZE + SWATCH_BORDER * 2.0,
+                                COLOR_SWATCH_SIZE + SWATCH_BORDER * 2.0
+                            ));
                             if world_position.x >= global_transform.translation().x - size.x / 2.0
                                 && world_position.x < global_transform.translation().x + size.x / 2.0
                                 && world_position.y >= global_transform.translation().y - size.y / 2.0
