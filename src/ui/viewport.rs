@@ -1,8 +1,9 @@
 //! Viewport rendering for the sprite atlas editor
 
 use bevy::prelude::*;
-use crate::config::{PIXEL_SCALE, DEFAULT_TILE_SIZE};
+use crate::config::{PIXEL_SCALE, DEFAULT_TILE_SIZE, PALETTE_PANEL_WIDTH};
 use crate::editor::EditorResource;
+use crate::file_io;
 
 /// Marker component for the atlas viewport
 #[derive(Component)]
@@ -37,6 +38,7 @@ impl Plugin for ViewportPlugin {
                 handle_scroll_input,
                 handle_undo_redo_input,
                 handle_tile_input,
+                handle_save_load_input,
             ))
             .add_systems(PostUpdate, cleanup_pixels);
     }
@@ -69,7 +71,8 @@ fn update_viewport_rendering(
     for y in 0..atlas_height {
         for x in 0..atlas_width {
             let pixel_color = atlas.get_pixel_at(x, y);
-            let screen_x = x as f32 * PIXEL_SCALE as f32 - viewport.offset_x;
+            // Offset viewport by palette panel width to prevent overlap
+            let screen_x = x as f32 * PIXEL_SCALE as f32 - viewport.offset_x + PALETTE_PANEL_WIDTH / 2.0 + 10.0;
             let screen_y = y as f32 * PIXEL_SCALE as f32 - viewport.offset_y;
             
             commands.spawn((
@@ -202,5 +205,38 @@ fn cleanup_pixels(
         if pixel.atlas_x >= atlas_width || pixel.atlas_y >= atlas_height {
             commands.entity(entity).despawn();
         }
+    }
+}
+
+/// Handle keyboard input for save/load operations
+fn handle_save_load_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    _editor: ResMut<EditorResource>,
+) {
+    // Save: Ctrl+S
+    if (keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight))
+        && keyboard.just_pressed(KeyCode::KeyS) {
+        // For now, just log - actual save will need a file path
+        println!("Save triggered (Ctrl+S) - file picker needed for actual implementation");
+        // TODO: Open file dialog and save
+        // file_io::save_project(&editor.editor, &path).unwrap_or_else(|e| {
+        //     eprintln!("Failed to save: {}", e);
+        // });
+    }
+    
+    // Load: Ctrl+O
+    if (keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight))
+        && keyboard.just_pressed(KeyCode::KeyO) {
+        // For now, just log - actual load will need a file path
+        println!("Load triggered (Ctrl+O) - file picker needed for actual implementation");
+        // TODO: Open file dialog and load
+        // match file_io::load_project(&path) {
+        //     Ok(loaded_editor) => {
+        //         *editor = EditorResource { editor: loaded_editor };
+        //     }
+        //     Err(e) => {
+        //         eprintln!("Failed to load: {}", e);
+        //     }
+        // }
     }
 }

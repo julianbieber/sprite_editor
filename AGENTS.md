@@ -6,7 +6,7 @@ A Bevy-based editor for creating and editing sprite atlases. A sprite atlas is a
 
 **Technology Stack:**
 - **Engine:** Bevy 0.19
-- **UI:** Feathers (Bevy UI library)
+- **UI:** Bevy sprites (Feathers planned for future)
 - **Language:** Rust
 
 ---
@@ -59,7 +59,7 @@ A Bevy-based editor for creating and editing sprite atlases. A sprite atlas is a
   - Color palette (list of RGBA colors)
   - Optional: undo history? (TBD)
 
-### UI Layout (Feathers)
+### UI Layout
 
 ```
 +------------------+-----------------------------+
@@ -94,7 +94,7 @@ bevy_sprite_editor/
 │       ├── palette.mml         # Color palette system
 │       ├── editor.mml          # Pixel editing & viewport
 │       ├── history.mml         # Undo/redo system
-│       ├── ui.mml              # Feathers UI structure
+│       ├── ui.mml              # UI structure
 │       └── file_io.mml         # Save/load flow
 ├── src/
 │   ├── main.rs                 # Bevy app entry point
@@ -103,14 +103,13 @@ bevy_sprite_editor/
 │   ├── palette.rs              # Color palette
 │   ├── editor.rs               # Drawing & viewport logic
 │   ├── history.rs              # Undo/redo stack
-│   ├── ui/
-│   │   ├── mod.rs
-│   │   ├── palette_ui.rs       # Palette sidebar
-│   │   ├── viewport.rs         # Atlas viewport rendering
-│   │   └── toolbar.rs          # Top/bottom UI elements
-│   └── file_io.rs              # Save/load implementation
+│   ├── file_io.rs              # Save/load implementation
+│   └── ui/
+│       ├── mod.rs              # UI module
+│       ├── palette_ui.rs       # Palette sidebar
+│       └── viewport.rs         # Atlas viewport rendering
 └── assets/
-    └── default_palette.json    # Default color palette
+    └── default_palette.json    # Default color palette (planned)
 ```
 
 ---
@@ -122,19 +121,19 @@ bevy_sprite_editor/
 struct Atlas {
     tile_size: u32,        // 8 (pixels per tile, square)
     width_in_tiles: u32,   // Number of tiles wide
-    height_in_tiles: u32,  // Number of tiles tall (v1: always 1?)
-    pixels: Vec<Color>,    // Flat array: [tile0_row0, tile0_row1, ... tile1_row0, ...]
+    height_in_tiles: u32,  // Number of tiles tall
+    pixels: Vec<Srgba>,    // Flat array: [tile0_row0, tile0_row1, ... tile1_row0, ...]
 }
 ```
 
 ### Palette
 ```rust
 struct Palette {
-    colors: Vec<Color>,    // Ordered list of RGBA colors
+    colors: Vec<Srgba>,    // Ordered list of RGBA colors
     selected_index: Option<usize>,  // Currently selected color
 }
 
-// Color = bevy::prelude::Color (RGBA, f32 0.0-1.0)
+// Color = bevy::prelude::Srgba (RGBA, f32 0.0-1.0)
 ```
 
 ### History
@@ -145,11 +144,13 @@ struct History {
 }
 
 enum Action {
-    SetPixel { position: (u32, u32), old_color: Color, new_color: Color },
-    AddTile { tile_index: u32 },
-    AddColor { color: Color, index: usize },
-    RemoveColor { color: Color, index: usize },
+    SetPixel { x: u32, y: u32, old_color: Srgba, new_color: Srgba },
+    AddTile,
+    RemoveTile { pixels: Vec<Srgba> },
+    AddColor { color: Srgba, index: usize },
+    RemoveColor { color: Srgba, index: usize },
     ReorderColor { from: usize, to: usize },
+    SetColor { index: usize, old_color: Srgba, new_color: Srgba },
 }
 ```
 
@@ -162,15 +163,16 @@ enum Action {
 | Mouse Left Click (viewport) | Set pixel to active palette color |
 | Mouse Left Click (palette) | Select color |
 | `\u00F6` (o umlaut) | Scroll viewport left |
-| `#` | Scroll viewport right |
-| (TBD) | Add tile to right |
+| `#` / `Digit3` | Scroll viewport right |
+| `Space` | Add tile to right |
+| `Backspace` | Remove tile from right |
+| `Ctrl+Z` | Undo last action |
+| `Ctrl+Y` | Redo last undone action |
+| `Ctrl+S` | Save project (logs to console, file picker TBD) |
+| `Ctrl+O` | Load project (logs to console, file picker TBD) |
 | (TBD) | Add color to palette |
 | (TBD) | Remove color from palette |
 | (TBD) | Reorder palette |
-| (TBD) | Undo |
-| (TBD) | Redo |
-| (TBD) | Save |
-| (TBD) | Load |
 
 ---
 
@@ -184,58 +186,94 @@ enum Action {
   - y_screen = y * 64 - viewport_offset_y
 
 ### Colors
-- Transparent: `Color::rgba(0.0, 0.0, 0.0, 0.0)`
-- Palette colors: Stored as `Color` (Bevy's RGBA)
-- Pixel rendering: Solid color rectangles (64x64)
+- Transparent: `Srgba::new(0.0, 0.0, 0.0, 0.0)`
+- Palette colors: Stored as `Srgba` (Bevy's RGBA)
+- Pixel rendering: Solid color sprites (64x64)
 
 ---
 
-## Implementation Priority
+## Implementation Status
 
-### Phase 1: Core (MVP)
-1. Bevy app scaffold with window setup
-2. Atlas data structure (1 tile, 8x8)
-3. Basic viewport rendering (pixels visible at 64x64)
-4. Color palette with default colors
-5. Click to draw (set pixel color)
-6. Active color selection
+### ✅ Phase 1: Core (MVP) - COMPLETED
+1. ✅ Bevy app scaffold with window setup
+2. ✅ Atlas data structure (1 tile, 8x8)
+3. ✅ Basic viewport rendering (pixels visible at 64x64)
+4. ✅ Color palette with default colors
+5. ✅ Click to draw (set pixel color)
+6. ✅ Active color selection
 
-### Phase 2: Navigation
-1. Scrolling with \u00F6 and # keys
-2. Viewport offset management
-3. Add tile button/functionality
+### ✅ Phase 2: Navigation - COMPLETED
+1. ✅ Scrolling with \u00F6 and # keys
+2. ✅ Viewport offset management
+3. ✅ Add tile functionality (Space key)
+4. ✅ Remove tile functionality (Backspace key)
 
-### Phase 3: Palette Management
-1. Add color UI
-2. Remove color UI
-3. Reorder colors (drag-and-drop)
-4. Palette persistence with atlas
+### ✅ Phase 4: Undo/Redo - COMPLETED
+1. ✅ History stack implementation
+2. ✅ Undo/redo actions (Ctrl+Z, Ctrl+Y)
+3. ✅ Integration with pixel drawing
+4. ✅ Integration with tile operations
 
-### Phase 4: Undo/Redo
-1. History stack implementation
-2. Undo/redo actions
-3. Integration with all mutable operations
+### ✅ Phase 7: Layout - COMPLETED
+1. ✅ Palette panel positioned on left side
+2. ✅ Viewport offset to avoid overlap with palette
+3. ✅ Swatches as children of panel entity
+4. ✅ Viewport clamping accounts for palette width
 
-### Phase 5: File I/O
-1. Save atlas as PNG + JSON
-2. Load atlas from PNG + JSON
-3. File picker UI (Feathers)
+### ⚠️ Phase 3: Palette Management - PARTIAL
+1. ❌ Add color UI
+2. ❌ Remove color UI
+3. ❌ Reorder colors (drag-and-drop)
+4. ✅ Palette logic implementation
+5. ✅ Palette persistence with atlas (code ready)
 
-### Phase 6: Polish
-1. Visual feedback (active color border, hover states)
-2. Status bar
-3. Error handling
+### ⚠️ Phase 5: File I/O - PARTIAL
+1. ✅ Save atlas as PNG + JSON (code ready)
+2. ✅ Load atlas from PNG + JSON (code ready)
+3. ❌ File picker UI (Feathers)
+4. ✅ Save/Load keyboard shortcuts (Ctrl+S, Ctrl+O) - logs to console, needs file picker
+5. ⚠️ Default save/load directory utility (code ready in file_io.rs)
+
+### ✅ Phase 7: Status Bar - COMPLETED
+1. ✅ Status bar background display
+2. ⚠️ Status text (pending Feathers UI integration)
+
+### ⚠️ Phase 6: Polish - PARTIAL
+1. ✅ Visual feedback (active color border, hover states)
+2. ✅ Status bar background
+3. ✅ Error handling (basic implementation done)
+4. ❌ Grid overlay
+5. ❌ Zoom functionality
+
+### ⚠️ Phase 6: Polish - PARTIAL
+1. ✅ Visual feedback (active color border, hover states)
+2. ❌ Status bar
+3. ⚠️ Error handling (basic implementation done)
+
+---
+
+## Decisions Made
+
+✅ **Feathers version:** Using Bevy 0.19 with built-in `bevy_feathers` feature (currently using Bevy sprites for rendering)
+✅ **Coordinate system:** Top-left origin for atlas coordinates (more intuitive for image editing)
+✅ **Color representation:** Using `Srgba` variant with direct field access (red, green, blue, alpha)
+✅ **Rendering:** Using Bevy 0.19's `Sprite::from_color()` for pixel rendering
+✅ **Key bindings:**
+   - Scroll: O (ö) for left, #/Digit3 for right
+   - Undo/Redo: Ctrl+Z / Ctrl+Y
+   - Tiles: Space to add, Backspace to remove
+   - Drawing: Left click on viewport
+   - Color selection: Left click on palette
 
 ---
 
 ## Open Questions / Decisions
 
-- [ ] Should atlas support multiple rows (height > 1 tile) in v1?
-- [ ] Should there be a "background" color separate from transparent?
-- [ ] How to handle palette color selection when drawing?
-- [ ] Should clicking a pixel with the active color do nothing, or toggle?
-- [ ] Feathers version compatibility with Bevy 0.19?
-- [ ] Key bindings for: add tile, add color, remove color, undo, redo, save, load
+- [ ] Should atlas support multiple rows (height > 1 tile) in v1? (Currently: yes, code supports it)
+- [ ] Should there be a "background" color separate from transparent? (Currently: transparent is a palette color)
+- [ ] How to handle palette color selection when drawing? (Currently: first color selected by default)
+- [ ] Should clicking a pixel with the active color do nothing, or toggle? (Currently: sets to that color regardless)
+- [ ] Key bindings for: add color to palette, remove color from palette, save, load
 
 ---
 
@@ -243,14 +281,14 @@ enum Action {
 
 ```toml
 [dependencies]
-bevy = "0.19"
-feathers = "0.19"  # Need to verify version compatibility
-# May need additional crates for:
-# - PNG encoding/decoding (image crate)
-# - JSON serialization (serde, serde_json)
+bevy = { version = "0.19", features = ["2d", "bevy_ui", "bevy_feathers"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+image = "0.25"
 ```
 
 ---
 
 *Last updated: 2026-07-19*
 *Project lead: jbieber*
+*Status: MVP functional - core editing features working*

@@ -59,10 +59,14 @@ impl Viewport {
 
     /// Clamp the viewport to ensure it doesn't scroll past the atlas boundaries
     pub fn clamp(&mut self, atlas: &Atlas, window_width: f32, window_height: f32) {
+        use crate::config::PALETTE_PANEL_WIDTH;
+        
         let atlas_width_pixels = atlas.width_in_pixels() as f32;
         let atlas_height_pixels = atlas.height_in_pixels() as f32;
 
-        let max_offset_x = (atlas_width_pixels * PIXEL_SCALE as f32 - window_width).max(0.0);
+        // Account for palette panel taking up space on the left
+        let available_width = window_width - PALETTE_PANEL_WIDTH - 20.0;
+        let max_offset_x = (atlas_width_pixels * PIXEL_SCALE as f32 - available_width).max(0.0);
         let max_offset_y = (atlas_height_pixels * PIXEL_SCALE as f32 - window_height).max(0.0);
 
         self.offset_x = self.offset_x.clamp(0.0, max_offset_x);
