@@ -23,7 +23,7 @@ use crate::config::{
     DEFAULT_TILE_SIZE, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, WINDOW_TITLE,
 };
 use crate::editor::EditorResource;
-use crate::ui::{PaletteUiPlugin, ViewportPlugin};
+use crate::ui::EditorUiPlugin;
 
 // ============================================================================
 // MAIN APP
@@ -45,8 +45,7 @@ fn main() {
         // Editor resource
         .insert_resource(EditorResource::with_tile_size(DEFAULT_TILE_SIZE))
         // Custom plugins
-        .add_plugins(PaletteUiPlugin)
-        .add_plugins(ViewportPlugin)
+        .add_plugins(EditorUiPlugin)
         // Systems
         .add_systems(Startup, setup_camera)
         .add_systems(Update, clamp_viewport_system)

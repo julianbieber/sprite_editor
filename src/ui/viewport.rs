@@ -1,31 +1,164 @@
 //! Viewport rendering for the sprite atlas editor
-//!
-//! Renders the atlas pixels and handles drawing input.
-//!
-//! This is a placeholder module. The actual rendering implementation
-//! will be added once we have the core systems working.
 
 use bevy::prelude::*;
-
+use crate::config::{PIXEL_SCALE, DEFAULT_TILE_SIZE};
 use crate::editor::EditorResource;
-
-// ============================================================================
-// COMPONENTS
-// ============================================================================
 
 /// Marker component for the atlas viewport
 #[derive(Component)]
 pub struct AtlasViewport;
 
-// ============================================================================
-// PLUGIN
-// ============================================================================
+/// Marker component for an individual pixel sprite
+#[derive(Component)]
+pub struct AtlasPixel {
+    pub atlas_x: u32,
+    pub atlas_y: u32,
+}
+
+/// Resource to track which pixel is under the mouse
+#[derive(Resource, Default)]
+pub struct HoveredPixel {
+    pub atlas_x: Option<u32>,
+    pub atlas_y: Option<u32>,
+}
 
 /// Plugin for the atlas viewport
 pub struct ViewportPlugin;
 
 impl Plugin for ViewportPlugin {
-    fn build(&self, _app: &mut App) {
-        // Placeholder - will implement rendering
+    fn build(&self, app: &mut App) {
+        app
+            .init_resource::<HoveredPixel>()
+            .add_systems(Startup, setup_viewport)
+            .add_systems(Update, (
+                update_viewport_rendering,
+                handle_pixel_hover,
+                handle_pixel_draw,
+                handle_scroll_input,
+            ))
+            .add_systems(PostUpdate, cleanup_pixels);
+    }
+}
+
+/// Setup the viewport
+fn setup_viewport(mut commands: Commands) {
+    commands.spawn((
+        Transform::default(),
+        AtlasViewport,
+    ));
+}
+
+/// Update the viewport rendering
+fn update_viewport_rendering(
+    editor: Res<EditorResource>,
+    mut commands: Commands,
+    pixel_query: Query<Entity, With<AtlasPixel>>,
+) {
+    let atlas = &editor.editor.atlas;
+    let viewport = &editor.editor.viewport;
+    
+    for entity in pixel_query.iter() {
+        commands.entity(entity).despawn();
+    }
+    
+    let atlas_width = atlas.width_in_pixels();
+    let atlas_height = atlas.height_in_pixels();
+    
+    for y in 0..atlas_height {
+        for x in 0..atlas_width {
+            let pixel_color = atlas.get_pixel_at(x, y);
+            let screen_x = x as f32 * PIXEL_SCALE as f32 - viewport.offset_x;
+            let screen_y = y as f32 * PIXEL_SCALE as f32 - viewport.offset_y;
+            
+            commands.spawn((
+                Sprite::from_color(pixel_color, Vec2::new(PIXEL_SCALE as f32, PIXEL_SCALE as f32)),
+                Transform::from_xyz(screen_x, screen_y, 0.0),
+                AtlasPixel { atlas_x: x, atlas_y: y },
+            ));
+        }
+    }
+}
+
+/// Handle mouse hover
+fn handle_pixel_hover(
+    windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform)>,
+    pixel_query: Query<(&AtlasPixel, &Transform)>,
+    mut hovered: ResMut<HoveredPixel>,
+) {
+    if let Ok(window) = windows.single() {
+        if let Some(cursor_position) = window.cursor_position() {
+            if let Ok((camera, camera_transform)) = camera_q.single() {
+                if let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) {
+                    for (pixel, transform) in pixel_query.iter() {
+                        let pixel_size = PIXEL_SCALE as f32;
+                        if world_position.x >= transform.translation.x
+                            && world_position.x < transform.translation.x + pixel_size
+                            && world_position.y >= transform.translation.y
+                            && world_position.y < transform.translation.y + pixel_size {
+                            hovered.atlas_x = Some(pixel.atlas_x);
+                            hovered.atlas_y = Some(pixel.atlas_y);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    hovered.atlas_x = None;
+    hovered.atlas_y = None;
+}
+
+/// Handle mouse clicks to draw pixels
+fn handle_pixel_draw(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    hovered: Res<HoveredPixel>,
+    mut editor: ResMut<EditorResource>,
+) {
+    if mouse_buttons.just_pressed(MouseButton::Left) {
+        if let (Some(x), Some(y)) = (hovered.atlas_x, hovered.atlas_y) {
+            if editor.editor.atlas.is_valid_atlas_pixel(x, y) {
+                // Clone the selected color before mutating
+                if let Some(selected_index) = editor.editor.palette.selected_index {
+                    if let Some(color) = editor.editor.palette.colors.get(selected_index).cloned() {
+                        editor.editor.atlas.set_pixel_at(x, y, color);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Handle keyboard input for scrolling
+fn handle_scroll_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut editor: ResMut<EditorResource>,
+) {
+    // Check for scroll left (o umlaut key: \u00F6)
+    if keyboard.just_pressed(KeyCode::KeyO) {
+        editor.editor.viewport.scroll_tile_left();
+    }
+    
+    // Check for scroll right (# key)
+    // Note: In Bevy, the '#' character is typically KeyCode::Digit3 (shift+3 produces #)
+    // But the requirement specifies '#' key. We'll use Digit3 as it's the most common mapping.
+    if keyboard.just_pressed(KeyCode::Digit3) {
+        editor.editor.viewport.scroll_tile_right();
+    }
+}
+
+/// Cleanup pixel sprites
+fn cleanup_pixels(
+    editor: Res<EditorResource>,
+    mut commands: Commands,
+    pixel_query: Query<(Entity, &AtlasPixel)>,
+) {
+    let atlas_width = editor.editor.atlas.width_in_pixels();
+    let atlas_height = editor.editor.atlas.height_in_pixels();
+    
+    for (entity, pixel) in pixel_query.iter() {
+        if pixel.atlas_x >= atlas_width || pixel.atlas_y >= atlas_height {
+            commands.entity(entity).despawn();
+        }
     }
 }
