@@ -68,163 +68,22 @@ impl Viewport {
         
         let atlas_width_pixels = atlas.width_in_pixels() as f32;
         let atlas_height_pixels = atlas.height_in_pixels() as f32;
-
-        // Account for palette panel taking up space on the left
-        // Palette covers from -window_width/2 to -window_width/2 + PALETTE_PANEL_WIDTH
-        // Atlas starts at palette right edge: -window_width/2 + PALETTE_PANEL_WIDTH
-        // Available screen space for atlas: window_width - PALETTE_PANEL_WIDTH
-        let available_width = window_width - PALETTE_PANEL_WIDTH;
+        let atlas_width_screen = atlas_width_pixels * PIXEL_SCALE as f32;
         let atlas_height_screen = atlas_height_pixels * PIXEL_SCALE as f32;
+        let available_width = window_width - PALETTE_PANEL_WIDTH;
 
-        // For x-axis clamping:
-        // The atlas is rendered with: screen_x = atlas_x * PIXEL_SCALE + atlas_x_shift - offset_x
-        // where atlas_x_shift = -window_width/2 + PALETTE_PANEL_WIDTH + PIXEL_SCALE/2
-        // 
-        // To prevent atlas from going under palette:
-        // The leftmost atlas pixel (x=0) has screen_x = 0 * PIXEL_SCALE + atlas_x_shift - offset_x
-        //   = -window_width/2 + PALETTE_PANEL_WIDTH + PIXEL_SCALE/2 - offset_x
-        // Its left edge is at: screen_x - PIXEL_SCALE/2
-        //   = -window_width/2 + PALETTE_PANEL_WIDTH - offset_x
-        // This must be >= -window_width/2 + PALETTE_PANEL_WIDTH (palette right edge)
-        //   => -window_width/2 + PALETTE_PANEL_WIDTH - offset_x >= -window_width/2 + PALETTE_PANEL_WIDTH
-        //   => -offset_x >= 0
-        //   => offset_x <= 0
-        //
-        // To prevent atlas from scrolling too far right (beyond screen):
-        // The rightmost visible atlas pixel must be <= window_width/2
-        // Last visible pixel x = available_width / PIXEL_SCALE + offset_x / PIXEL_SCALE
-        // Actually: screen_x + PIXEL_SCALE/2 <= window_width/2
-        //   => atlas_x * PIXEL_SCALE + atlas_x_shift - offset_x + PIXEL_SCALE/2 <= window_width/2
-        // Simplifying: offset_x >= atlas_x * PIXEL_SCALE + atlas_x_shift + PIXEL_SCALE/2 - window_width/2
-        // For the rightmost atlas pixel: atlas_x = atlas_width_pixels - 1
-        //   offset_x >= (atlas_width_pixels - 1) * PIXEL_SCALE + atlas_x_shift + PIXEL_SCALE/2 - window_width/2
-        // Substituting atlas_x_shift:
-        //   offset_x >= (atlas_width_pixels - 1) * PIXEL_SCALE + (-window_width/2 + PALETTE_PANEL_WIDTH + PIXEL_SCALE/2) + PIXEL_SCALE/2 - window_width/2
-        //   offset_x >= (atlas_width_pixels - 1) * PIXEL_SCALE + PALETTE_PANEL_WIDTH - window_width + PIXEL_SCALE
-        //
-        // For simplicity, we'll clamp offset_x to [0, atlas_width_pixels * PIXEL_SCALE - available_width]
-        // But since offset_x is in atlas pixels, not screen pixels, we need to divide by PIXEL_SCALE
-        //
-        // Actually, looking at the scroll functions, they scroll by tile_size (in atlas pixels).
-        // And offset_x is compared with atlas_width_pixels (in atlas pixels).
-        // So offset_x is in atlas pixels.
-        //
-        // The screen position formula: screen_x = x * PIXEL_SCALE + atlas_x_shift - offset_x * PIXEL_SCALE
-        // Wait, that's not right. Let me re-check viewport.rs...
-        // In viewport.rs: screen_x = x * PIXEL_SCALE + atlas_x_shift - viewport.offset_x
-        // So offset_x is in screen pixels, not atlas pixels!
-        
-        // OK so offset_x is in screen pixels. Let's reconsider.
-        // screen_x = atlas_x * PIXEL_SCALE + atlas_x_shift - offset_x
-        // Left edge of pixel: screen_x - PIXEL_SCALE/2
-        //   = atlas_x * PIXEL_SCALE + atlas_x_shift - offset_x - PIXEL_SCALE/2
-        //   = atlas_x * PIXEL_SCALE + (-window_width/2 + PALETTE_PANEL_WIDTH + PIXEL_SCALE/2) - offset_x - PIXEL_SCALE/2
-        //   = atlas_x * PIXEL_SCALE - window_width/2 + PALETTE_PANEL_WIDTH - offset_x
-        //
-        // For x=0 (leftmost pixel):
-        //   left_edge = -window_width/2 + PALETTE_PANEL_WIDTH - offset_x
-        // This must be >= -window_width/2 + PALETTE_PANEL_WIDTH (palette right edge)
-        //   => -offset_x >= 0 => offset_x <= 0
-        
-        // For the rightmost pixel (x = atlas_width_pixels - 1):
-        //   left_edge = (atlas_width_pixels - 1) * PIXEL_SCALE - window_width/2 + PALETTE_PANEL_WIDTH - offset_x
-        //   right_edge = left_edge + PIXEL_SCALE
-        //   We want right_edge <= window_width/2 (right edge of screen)
-        //   => left_edge + PIXEL_SCALE <= window_width/2
-        //   => (atlas_width_pixels - 1) * PIXEL_SCALE - window_width/2 + PALETTE_PANEL_WIDTH - offset_x + PIXEL_SCALE <= window_width/2
-        //   => atlas_width_pixels * PIXEL_SCALE - window_width/2 + PALETTE_PANEL_WIDTH - offset_x + PIXEL_SCALE/2 <= window_width/2
-        //   => -offset_x <= window_width - PALETTE_PANEL_WIDTH - atlas_width_pixels * PIXEL_SCALE - PIXEL_SCALE/2
-        //   => offset_x >= atlas_width_pixels * PIXEL_SCALE + PIXEL_SCALE/2 - (window_width - PALETTE_PANEL_WIDTH)
-        //
-        // But this seems overly complex. Let's use a simpler approach:
-        // The available screen width for atlas is: window_width - PALETTE_PANEL_WIDTH
-        // The atlas width in screen pixels is: atlas_width_pixels * PIXEL_SCALE
-        // 
-        // If atlas fits in available space:
-        //   offset_x should be 0 (no scrolling needed)
-        // If atlas is wider than available space:
-        //   max offset_x = atlas_width_pixels * PIXEL_SCALE - available_width
-        //
-        // But offset_x is subtracted in the formula, so:
-        //   To show the rightmost part: offset_x = atlas_width_pixels * PIXEL_SCALE - available_width
-        
-        let max_offset_x = (atlas_width_pixels * PIXEL_SCALE as f32 - available_width).max(0.0);
-        
-        // Don't allow negative offset (which would push atlas into palette)
+        // X-axis: offset_x is in screen pixels, subtracted from screen_x
+        // To prevent atlas from going under palette (left): offset_x >= 0
+        // To prevent scrolling past right edge: offset_x <= atlas_width_screen - available_width
+        let max_offset_x = (atlas_width_screen - available_width).max(0.0);
         self.offset_x = self.offset_x.clamp(0.0, max_offset_x);
 
-        // For y-axis clamping:
-        // screen_y = -y * PIXEL_SCALE + PIXEL_SCALE/2 + offset_y (from viewport.rs line 95)
-        // The atlas y-coordinate system has (0,0) at top-left
-        // Bevy's screen has (0,0) at center, with y-up
-        //
-        // For the topmost atlas pixel (y=0):
-        //   screen_y = 0 + PIXEL_SCALE/2 + offset_y = PIXEL_SCALE/2 + offset_y
-        //   This is the center of the pixel, so top edge is at: PIXEL_SCALE/2 + offset_y - PIXEL_SCALE/2 = offset_y
-        //   We want top edge >= -window_height/2 + PALETTE_PANEL_WIDTH... no, that's not right
-        //   Actually, the atlas should start at the top of the available area (below any toolbar)
-        //   For now, let's just ensure the atlas stays within the window
-        //
-        // For the bottommost atlas pixel (y = atlas_height_pixels - 1):
-        //   screen_y = -(atlas_height_pixels - 1) * PIXEL_SCALE + PIXEL_SCALE/2 + offset_y
-        //   = -atlas_height_pixels * PIXEL_SCALE + PIXEL_SCALE + PIXEL_SCALE/2 + offset_y
-        //   = -atlas_height_pixels * PIXEL_SCALE + PIXEL_SCALE * 1.5 + offset_y
-        //   Bottom edge: screen_y - PIXEL_SCALE/2 = -atlas_height_pixels * PIXEL_SCALE + offset_y
-        //   We want: bottom_edge >= -window_height/2
-        //   => -atlas_height_pixels * PIXEL_SCALE + offset_y >= -window_height/2
-        //   => offset_y >= atlas_height_pixels * PIXEL_SCALE - window_height/2
-        //
-        // For the topmost atlas pixel (y=0):
-        //   screen_y = PIXEL_SCALE/2 + offset_y
-        //   Top edge: screen_y - PIXEL_SCALE/2 = offset_y
-        //   We want: top_edge <= window_height/2
-        //   => offset_y <= window_height/2
-        //
-        // So: offset_y must be in [atlas_height_pixels * PIXEL_SCALE - window_height/2, window_height/2]
-        // But we want offset_y=0 to center the atlas when it fits, so let's center it:
-        // If atlas fits in window (atlas_height_screen <= window_height):
-        //   We want offset_y such that the atlas is centered vertically
-        //   Top of atlas at offset_y, bottom at offset_y - atlas_height_screen
-        //   Center of atlas at offset_y - atlas_height_screen/2
-        //   We want center at 0 (screen center): offset_y - atlas_height_screen/2 = 0
-        //   => offset_y = atlas_height_screen/2
-        //
-        // If atlas is taller than window:
-        //   offset_y in [atlas_height_screen - window_height, window_height/2]
-        //   Actually, let's use: [atlas_height_screen - window_height, 0] to allow scrolling up
-        //
-        // Wait, let me reconsider. With offset_y=0:
-        //   Top pixel (y=0): screen_y = PIXEL_SCALE/2, top edge at 0
-        //   Bottom pixel (y=atlas_height-1): screen_y = -(atlas_height-1)*PIXEL_SCALE + PIXEL_SCALE/2
-        //   Bottom edge: screen_y - PIXEL_SCALE/2 = -(atlas_height-1)*PIXEL_SCALE
-        //   = -atlas_height_screen + PIXEL_SCALE
-        //
-        // To center the atlas vertically when it fits:
-        //   We want the bottom edge at -window_height/2 (approximately)
-        //   => -atlas_height_screen + PIXEL_SCALE + offset_y_addition = -window_height/2
-        //   Actually, with offset_y, bottom edge is: -atlas_height_screen + PIXEL_SCALE + offset_y
-        //   We want: -atlas_height_screen + offset_y = -window_height/2
-        //   => offset_y = atlas_height_screen - window_height/2
-        //
-        // But we also want the top edge at offset_y (from above) to be <= window_height/2
-        //   => offset_y <= window_height/2
-        //
-        // So offset_y should be:
-        //   If atlas_height_screen <= window_height:
-        //     offset_y = atlas_height_screen / 2  (centered)
-        //   Else:
-        //     offset_y in [atlas_height_screen - window_height, window_height/2]
-        //
-        // Actually, I think the simplest approach is:
-        //   min_offset_y = (atlas_height_screen - window_height).max(0.0);
-        //   max_offset_y = window_height / 2.0;
-        //   But we also want to center when it fits, so we need to adjust the initial offset_y
-        
-        // For now, use simple clamping that centers small atlases and allows scrolling for tall ones
-        let min_offset_y = (atlas_height_screen - window_height / 2.0).max(0.0);
-        let max_offset_y = window_height / 2.0;
-        
-        self.offset_y = self.offset_y.clamp(min_offset_y, max_offset_y);
+        // Y-axis: screen_y = window_height/2 - (y + 0.5) * PIXEL_SCALE + offset_y
+        // With offset_y=0: atlas starts at screen top (pixel 0,0 top edge at window_height/2)
+        // To prevent scrolling past bottom: offset_y <= atlas_height_screen - window_height
+        // To prevent scrolling past top: offset_y >= 0
+        let max_offset_y = (atlas_height_screen - window_height).max(0.0);
+        self.offset_y = self.offset_y.clamp(0.0, max_offset_y);
     }
 
     /// Scroll by one tile to the left (in screen pixels)
