@@ -16,6 +16,13 @@ pub struct AtlasPixel {
     pub atlas_y: u32,
 }
 
+/// Marker component for a grid line (visual only, not saved)
+#[derive(Component)]
+pub struct GridLine {
+    pub is_vertical: bool,
+    pub position: f32, // position in atlas pixels
+}
+
 /// Resource to track which pixel is under the mouse
 #[derive(Resource, Default)]
 pub struct HoveredPixel {
@@ -33,6 +40,7 @@ impl Plugin for ViewportPlugin {
             .add_systems(Startup, setup_viewport)
             .add_systems(Update, (
                 update_viewport_rendering,
+                update_grid_lines,
                 handle_pixel_hover,
                 handle_pixel_draw,
                 handle_scroll_input,
@@ -85,6 +93,52 @@ fn update_viewport_rendering(
                 AtlasPixel { atlas_x: x, atlas_y: y },
             ));
         }
+    }
+}
+
+/// Update grid lines to show tile boundaries
+fn update_grid_lines(
+    editor: Res<EditorResource>,
+    mut commands: Commands,
+    grid_query: Query<Entity, With<GridLine>>,
+) {
+    let atlas = &editor.editor.atlas;
+    let viewport = &editor.editor.viewport;
+    let tile_size = atlas.tile_size as f32;
+    
+    // Despawn old grid lines
+    for entity in grid_query.iter() {
+        commands.entity(entity).despawn();
+    }
+    
+    // Calculate grid line positions
+    let atlas_width = atlas.width_in_pixels() as f32;
+    let atlas_height = atlas.height_in_pixels() as f32;
+    
+    // Vertical grid lines (between tiles, at tile boundaries)
+    let mut x = tile_size;
+    while x < atlas_width {
+        let screen_x = x * PIXEL_SCALE as f32 - viewport.offset_x;
+        // Spawn a vertical line sprite (tall and thin)
+        commands.spawn((
+            Sprite::from_color(Color::Srgba(Srgba::new(0.5, 0.5, 0.5, 0.5)), Vec2::new(1.0, atlas_height * PIXEL_SCALE as f32)),
+            Transform::from_xyz(screen_x, -atlas_height * PIXEL_SCALE as f32 / 2.0 + viewport.offset_y, 0.1),
+            GridLine { is_vertical: true, position: x },
+        ));
+        x += tile_size;
+    }
+    
+    // Horizontal grid lines (between tiles, at tile boundaries)
+    let mut y = tile_size;
+    while y < atlas_height {
+        let screen_y = -(y as f32) * PIXEL_SCALE as f32 + viewport.offset_y;
+        // Spawn a horizontal line sprite (wide and thin)
+        commands.spawn((
+            Sprite::from_color(Color::Srgba(Srgba::new(0.5, 0.5, 0.5, 0.5)), Vec2::new(atlas_width * PIXEL_SCALE as f32, 1.0)),
+            Transform::from_xyz(atlas_width * PIXEL_SCALE as f32 / 2.0 - viewport.offset_x, screen_y, 0.1),
+            GridLine { is_vertical: false, position: y },
+        ));
+        y += tile_size;
     }
 }
 

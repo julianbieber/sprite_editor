@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy::color::palettes::css;
-use crate::config::{COLOR_SWATCH_SIZE, PALETTE_PANEL_WIDTH};
+use crate::config::{COLOR_SWATCH_SIZE, PALETTE_PANEL_WIDTH, DEFAULT_WINDOW_WIDTH};
 use crate::editor::EditorResource;
 
 /// Marker component for the palette panel
@@ -33,9 +33,19 @@ impl Plugin for PaletteUiPlugin {
 }
 
 /// Setup the palette panel
-fn setup_palette_panel(mut commands: Commands) {
-    // Position palette panel on the left side of the screen
-    let panel_x = -PALETTE_PANEL_WIDTH / 2.0;
+fn setup_palette_panel(mut commands: Commands, windows: Query<&Window>) {
+    // Position palette panel on the left border of the screen
+    // Panel should be positioned so its right edge is at the left edge of the viewport
+    // With Camera2d, (0,0) is center, left edge is at -window_width/2
+    // Panel width is PALETTE_PANEL_WIDTH, so its center should be at:
+    // x = -window_width/2 + PALETTE_PANEL_WIDTH/2
+    let window_width = if let Ok(window) = windows.single() {
+        window.width()
+    } else {
+        DEFAULT_WINDOW_WIDTH as f32
+    };
+    let panel_x = -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0;
+    
     commands.spawn((
         Transform::from_xyz(panel_x, 0.0, 0.0),
         PalettePanel,
@@ -46,6 +56,7 @@ fn setup_palette_panel(mut commands: Commands) {
 fn update_palette_display(
     editor: Res<EditorResource>,
     mut commands: Commands,
+    windows: Query<&Window>,
     panel_query: Query<Entity, With<PalettePanel>>,
     swatch_query: Query<Entity, With<ColorSwatch>>,
 ) {
@@ -55,9 +66,15 @@ fn update_palette_display(
     let panel_entity = if let Ok(entity) = panel_query.single() {
         entity
     } else {
-        // Create panel if it doesn't exist (same position as setup_palette_panel)
+        // Create panel if it doesn't exist at the left border
+        let window_width = if let Ok(window) = windows.single() {
+            window.width()
+        } else {
+            DEFAULT_WINDOW_WIDTH as f32
+        };
+        let panel_x = -window_width / 2.0 + PALETTE_PANEL_WIDTH / 2.0;
         commands.spawn((
-            Transform::from_xyz(-PALETTE_PANEL_WIDTH / 2.0, 0.0, 0.0),
+            Transform::from_xyz(panel_x, 0.0, 0.0),
             PalettePanel,
         )).id()
     };
