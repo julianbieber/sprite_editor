@@ -224,14 +224,17 @@ fn handle_scroll_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut editor: ResMut<EditorResource>,
 ) {
-    // Check for scroll left (o umlaut key: \u00F6)
-    if keyboard.just_pressed(KeyCode::KeyO) {
+    // Check for scroll left (o umlaut key: \u00F6 / ö)
+    // On German keyboard, ö is typically KeyO with AltGr or on Semicolon key
+    if keyboard.just_pressed(KeyCode::KeyO) 
+        || keyboard.just_pressed(KeyCode::Semicolon) {
         editor.editor.viewport.scroll_tile_left();
     }
     
     // Check for scroll right (# key)
-    // Note: In Bevy, the '#' character is typically KeyCode::Digit3 (shift+3 produces #)
-    if keyboard.just_pressed(KeyCode::Digit3) {
+    // On German keyboard, # is typically Shift+3 (Digit3) or Numpad3
+    if keyboard.just_pressed(KeyCode::Digit3) 
+        || keyboard.just_pressed(KeyCode::Numpad3) {
         editor.editor.viewport.scroll_tile_right();
     }
 }
