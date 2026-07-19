@@ -75,21 +75,15 @@ impl Viewport {
         let atlas_width_screen = atlas_width_pixels * PIXEL_SCALE as f32;
         let atlas_height_screen = atlas_height_pixels * PIXEL_SCALE as f32;
 
-        // For x-axis: clamp offset_x to valid range
+        // For x-axis: allow scrolling with reasonable bounds
         // Pixel rendering: screen_x = atlas_x * PIXEL_SCALE - offset_x * PIXEL_SCALE
-        // So offset_x moves atlas left/right in atlas pixel units
+        // offset_x moves atlas left/right in atlas pixel units
         // 
-        // Minimum offset_x: when leftmost atlas pixel is at right edge of viewport
-        // screen_x(0) = 0 - offset_x * PIXEL_SCALE = available_width
-        // => offset_x = -available_width / PIXEL_SCALE
-        //
-        // Maximum offset_x: when rightmost atlas pixel is at left edge of viewport  
-        // screen_x(atlas_width-1) = (atlas_width-1) * PIXEL_SCALE - offset_x * PIXEL_SCALE = 0
-        // => offset_x = (atlas_width_pixels - 1)  (approximately atlas_width_pixels)
-        //
-        // For simplicity, use atlas_width_pixels as max and -available_width/PIXEL_SCALE as min
-        let min_offset_x = -available_width / PIXEL_SCALE as f32;
-        let max_offset_x = atlas_width_pixels - 1.0;
+        // Allow scrolling up to 10 tiles beyond the atlas edges in either direction
+        // This provides a good balance between allowing scrolling and preventing getting lost
+        let scroll_margin = 10.0 * DEFAULT_TILE_SIZE as f32; // 10 tiles margin
+        let min_offset_x = -scroll_margin;
+        let max_offset_x = atlas_width_pixels + scroll_margin - DEFAULT_TILE_SIZE as f32;
         self.offset_x = self.offset_x.clamp(min_offset_x, max_offset_x);
 
         // For y-axis with flipped coordinates:
