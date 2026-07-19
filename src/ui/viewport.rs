@@ -119,7 +119,7 @@ fn update_grid_lines(
     let atlas_width = atlas.width_in_pixels() as f32;
     let atlas_height = atlas.height_in_pixels() as f32;
     
-    // Draw grid lines at tile boundaries
+    // Draw grid lines at tile boundaries - around each tile
     // Tile size in screen pixels
     let tile_size_screen = tile_size * PIXEL_SCALE as f32;
     let atlas_width_screen = atlas_width * PIXEL_SCALE as f32;
@@ -129,36 +129,31 @@ fn update_grid_lines(
     let grid_thickness = 2.0;
     let grid_color = Color::Srgba(Srgba::new(0.3, 0.3, 0.3, 0.8));
     
-    // Vertical grid lines - at each tile boundary (x = tile_size, 2*tile_size, ...)
-    // Position: screen_x = x_atlas * 64 - offset_x
-    // Y position: center of atlas in screen coords = -atlas_height_screen / 2 + offset_y / 2?
-    // Actually, atlas pixels go from y=0 (screen y=offset_y) to y=atlas_height-1 (screen y=-(atlas_height-1)*64 + offset_y)
-    // So center is at: (offset_y + (-(atlas_height-1)*64 + offset_y)) / 2 = offset_y - (atlas_height-1)*32
-    // For simplicity, use offset_y - atlas_height_screen / 2
+    // Vertical grid lines - at each tile boundary including left edge (x = 0, tile_size, 2*tile_size, ...)
+    // Y position: center of atlas in screen coords
     let center_y = viewport.offset_y - atlas_height_screen / 2.0;
     
-    let mut x_atlas = tile_size;
-    while x_atlas < atlas_width {
+    let mut x_atlas = 0.0;
+    while x_atlas <= atlas_width {
         let screen_x = x_atlas * PIXEL_SCALE as f32 - viewport.offset_x;
         commands.spawn((
             Sprite::from_color(grid_color, Vec2::new(grid_thickness, atlas_height_screen)),
-            Transform::from_xyz(screen_x, center_y, 1.0),  // z=1 to be on top of pixels
+            Transform::from_xyz(screen_x, center_y, 1.0),
             GridLine { is_vertical: true, position: x_atlas },
         ));
         x_atlas += tile_size;
     }
     
-    // Horizontal grid lines - at each tile boundary (y = tile_size, 2*tile_size, ...)
-    // Position: screen_y = -y_atlas * 64 + offset_y
-    // X position: center of atlas = atlas_width_screen / 2 - offset_x
+    // Horizontal grid lines - at each tile boundary including top edge (y = 0, tile_size, 2*tile_size, ...)
+    // X position: center of atlas
     let center_x = atlas_width_screen / 2.0 - viewport.offset_x;
     
-    let mut y_atlas = tile_size;
-    while y_atlas < atlas_height {
+    let mut y_atlas = 0.0;
+    while y_atlas <= atlas_height {
         let screen_y = -(y_atlas as f32) * PIXEL_SCALE as f32 + viewport.offset_y;
         commands.spawn((
             Sprite::from_color(grid_color, Vec2::new(atlas_width_screen, grid_thickness)),
-            Transform::from_xyz(center_x, screen_y, 1.0),  // z=1 to be on top of pixels
+            Transform::from_xyz(center_x, screen_y, 1.0),
             GridLine { is_vertical: false, position: y_atlas },
         ));
         y_atlas += tile_size;
