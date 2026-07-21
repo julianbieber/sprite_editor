@@ -1,7 +1,7 @@
 //! Bevy Sprite Atlas Editor
 //!
 //! A Bevy-based editor for creating and editing sprite atlases.
-//! 
+//!
 //! Features:
 //! - Pixel-level editing with color palette
 //! - Tile-based atlas organization
@@ -9,7 +9,6 @@
 //! - PNG + JSON file format
 
 use bevy::prelude::*;
-use bevy::window::WindowResolution;
 
 mod atlas;
 mod config;
@@ -19,15 +18,9 @@ mod history;
 mod palette;
 mod ui;
 
-use crate::config::{
-    DEFAULT_TILE_SIZE, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, WINDOW_TITLE,
-};
+use crate::config::{DEFAULT_TILE_SIZE, WINDOW_TITLE};
 use crate::editor::EditorResource;
 use crate::ui::EditorUiPlugin;
-
-// ============================================================================
-// MAIN APP
-// ============================================================================
 
 fn main() {
     App::new()
@@ -35,10 +28,8 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: WINDOW_TITLE.to_string(),
-                resolution: WindowResolution::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
                 resizable: true,
-                present_mode: bevy::window::PresentMode::AutoNoVsync,
-                position: bevy::window::WindowPosition::At(IVec2::new(100, 100)),
+                present_mode: bevy::window::PresentMode::AutoVsync,
                 ..default()
             }),
             ..default()
@@ -54,11 +45,6 @@ fn main() {
         .run();
 }
 
-// ============================================================================
-// SETUP SYSTEMS
-// ============================================================================
-
-/// Setup the camera
 fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
@@ -67,11 +53,7 @@ fn setup_camera(mut commands: Commands) {
 // UPDATE SYSTEMS
 // ============================================================================
 
-/// Clamp the viewport to the atlas boundaries
-fn clamp_viewport_system(
-    mut editor: ResMut<EditorResource>,
-    windows: Query<&Window>,
-) {
+fn clamp_viewport_system(mut editor: ResMut<EditorResource>, windows: Query<&Window>) {
     if let Ok(window) = windows.single() {
         editor
             .editor
@@ -79,11 +61,7 @@ fn clamp_viewport_system(
     }
 }
 
-/// Handle window resize
-fn handle_window_resize(
-    mut editor: ResMut<EditorResource>,
-    windows: Query<&Window>,
-) {
+fn handle_window_resize(mut editor: ResMut<EditorResource>, windows: Query<&Window>) {
     if let Ok(window) = windows.single() {
         editor
             .editor
