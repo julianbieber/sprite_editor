@@ -1,6 +1,7 @@
 //! Palette UI for the sprite atlas editor
 
-use bevy::feathers::controls::{ButtonVariant, FeathersButton};
+use bevy::ecs::relationship::RelationshipSourceCollection;
+use bevy::feathers::controls::FeathersButton;
 use bevy::feathers::dark_theme::create_dark_theme;
 use bevy::feathers::focus::FocusIndicator;
 use bevy::feathers::theme::{ThemeBackgroundColor, ThemeToken, UiTheme};
@@ -16,10 +17,11 @@ impl Plugin for PaletteUiPlugin {
     fn build(&self, app: &mut App) {
         let mut theme = create_dark_theme();
         let colors = [
-            Color::srgb(0.8, 0.2, 0.2),
-            Color::srgb(0.2, 0.8, 0.2),
-            Color::srgb(0.2, 0.2, 0.8),
-            Color::srgb(0.8, 0.8, 0.2),
+            Color::srgba(1.0, 1.0, 1.0, 0.0),
+            Color::srgba(0.8, 0.2, 0.2, 1.0),
+            Color::srgba(0.2, 0.8, 0.2, 1.0),
+            Color::srgba(0.2, 0.2, 0.8, 1.0),
+            Color::srgba(0.8, 0.8, 0.2, 1.0),
         ];
 
         for (i, color) in colors.into_iter().enumerate() {
@@ -27,6 +29,10 @@ impl Plugin for PaletteUiPlugin {
         }
 
         app.add_plugins(FeathersPlugins);
+        app.insert_resource(SelectedPaletteOption {
+            index: 0,
+            entity: Entity::new(),
+        });
         app.insert_resource(UiTheme(theme));
         app.add_systems(Startup, setup_palette_panel.spawn())
             .add_systems(Update, (populate_buttons,));
@@ -51,15 +57,26 @@ fn setup_palette_panel() -> impl Scene {
     }
 }
 
-fn populate_buttons(mut commands: Commands, root: Query<Entity, Added<ColorPickerRoot>>) {
+fn populate_buttons(
+    mut commands: Commands,
+    root: Query<Entity, Added<ColorPickerRoot>>,
+    mut selected: ResMut<SelectedPaletteOption>,
+) {
     let Ok(root_ent) = root.single() else { return };
 
-    for i in 0..4 {
-        commands
-            .spawn_scene(colored_button(i))
-            .insert(ChildOf(root_ent))
+    for i in 0..5 {
+        let mut e = commands.spawn_scene(colored_button(i));
+        e.insert(ChildOf(root_ent))
             .remove::<Hovered>() // Hovered overrides the theme key
-            .remove::<FocusIndicator>(); // FocusIndicator controlls Outline, which I want to control myself
+            .remove::<FocusIndicator>();
+        if i == 0 {
+            e.insert(Outline {
+                width: px(2),
+                color: Color::WHITE,
+                ..Default::default()
+            });
+            selected.entity = e.id();
+        }
     }
 }
 
@@ -72,12 +89,8 @@ fn colored_button(i: usize) -> impl Scene {
         @FeathersButton {
         }
         ThemeBackgroundColor(palette_theme(i))
-        Outline {
-            width: px(2),
-            color: Color::WHITE
-        }
-        on(move |_activate: On<Activate>| {
-            info!("i" =? i, "Normal button clicked!");
+        on(move |activate: On<Activate>,  commands: Commands, previous: ResMut<SelectedPaletteOption>| {
+            on_palette_click(activate, i, commands, previous);
         })
 
     }
@@ -85,4 +98,34 @@ fn colored_button(i: usize) -> impl Scene {
 
 fn palette_theme(i: usize) -> ThemeToken {
     ThemeToken::new(format!("ColorPalette::{i}").into())
+}
+
+#[derive(Resource)]
+struct SelectedPaletteOption {
+    index: usize,
+    entity: Entity,
+}
+
+fn on_palette_click(
+    activate: On<Activate>,
+    index: usize,
+    mut commands: Commands,
+    mut previous: ResMut<SelectedPaletteOption>,
+) {
+    commands
+        .get_entity(previous.entity)
+        .unwrap()
+        .remove::<Outline>();
+
+    commands
+        .get_entity(activate.entity)
+        .unwrap()
+        .insert(Outline {
+            width: px(2),
+            color: Color::WHITE,
+            ..Default::default()
+        });
+
+    previous.index = index;
+    previous.entity = activate.entity;
 }
