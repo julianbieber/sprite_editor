@@ -72,8 +72,13 @@ echo "6. edit the palette, save, and reopen"
 # back, or every recolour would be lost on the next open.
 PAL="$OUT/doc/palette"
 rm -f "$PAL.png" "$PAL.atlas.json"
+# Recolour entry 2 to orange, add a blue one and paint with it, drop it again,
+# then reselect the orange entry and walk it down to slot 0. The reselect matters:
+# dropping an entry clamps the selection to the end of the palette, not back to
+# where it was. Ends selected on slot 0, so the reopened run proves both the
+# colour and the order came back.
 ./tests/shot.sh "$OUT/03-palette-edited.png" \
-    "select 2; color #ff8800ff; color+; color #22aaffff; paint 1,1; paint 2,2; color-; save" \
+    "select 2; color #ff8800ff; color+; color #22aaffff; paint 1,1; paint 2,2; color-; select 2; move-; move-; save" \
     -- "$PAL"
 
 # Started from the 17-colour built-in palette: one added, one removed.
@@ -89,6 +94,23 @@ if grep -q '"g": 0.5333' "$PAL.atlas.json"; then
     echo "   sidecar carries the recoloured entry"
 else
     echo "   FAIL: the recoloured entry is not in the sidecar" >&2
+    exit 1
+fi
+
+# It was then moved to slot 0, so it is the first colour in the sidecar and the
+# selection followed it. Order is part of the format, not a UI detail.
+if grep -q '"selected_index": 0' "$PAL.atlas.json"; then
+    echo "   sidecar carries the moved selection"
+else
+    echo "   FAIL: the selection did not follow the moved entry" >&2
+    grep '"selected_index"' "$PAL.atlas.json" >&2
+    exit 1
+fi
+if [ "$(grep -n '"g": 0.5333' "$PAL.atlas.json" | cut -d: -f1)" -lt \
+     "$(grep -n '"g": 0.0' "$PAL.atlas.json" | head -1 | cut -d: -f1)" ]; then
+    echo "   the moved entry is first in the sidecar"
+else
+    echo "   FAIL: the moved entry is not first in the sidecar" >&2
     exit 1
 fi
 
@@ -110,11 +132,13 @@ echo "                    diagonal painted at x=24 starts exactly at the left"
 echo "                    edge, and tiles 0-2 (the red/blue marks) have"
 echo "                    scrolled off."
 echo "  03-palette-edited.png"
-echo "                  — swatch 2 is orange (was white), the added blue entry"
-echo "                    was removed again, the two painted pixels are blue,"
+echo "                  — the orange entry (was white) has been walked to the"
+echo "                    first slot and is still selected, the added blue entry"
+echo "                    was removed again, the two painted pixels stayed blue,"
 echo "                    and the sliders show the selected colour."
 echo "  04-palette-reopened.png"
-echo "                  — the same file reopened: the orange swatch survived the"
-echo "                    round trip through the sidecar, and there is no '*'."
+echo "                  — the same file reopened: the orange swatch is still"
+echo "                    first and still selected, so both the colour and the"
+echo "                    order survived the sidecar. No '*'."
 echo
 echo "To drive it by hand:  cargo run -- $WORK.png"

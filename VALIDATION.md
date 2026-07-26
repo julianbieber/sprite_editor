@@ -23,7 +23,7 @@ Screenshots land in `target/screenshots/`. Individually:
 
 ```bash
 cargo check --all-targets
-cargo test                           # 113 unit tests
+cargo test                           # 121 unit tests
 cargo test a_wide_atlas              # one test
 cargo build --release
 ```
@@ -41,15 +41,16 @@ cargo build --release
   not; scroll clamping at both ends, including re-clamping after the atlas shrinks
 - `document.rs` — requests applied in order; out-of-bounds and no-op paints leave
   the revision alone; a multi-pixel drag is one revision bump; a palette edit
-  dirties the file without bumping the revision, and the last colour cannot be
-  removed
+  dirties the file without bumping the revision; the last colour cannot be
+  removed; a move carries the selection and leaves the pixels alone
 - `input.rs` — click, drag-once-per-pixel, release ends the stroke, key bindings
 - `dev_harness.rs` — script parsing and one-step-per-frame execution
 - `cli.rs` — argument parsing, suffix stripping, bad input falling back
 - `ui_chrome.rs` — theme tokens generated from the loaded palette, and dropped
   when it shrinks; channel read/write round trips; and the three sidebar widgets
   driven by triggering their observers, which is the one part of the sidebar a
-  screenshot cannot reach
+  screenshot cannot reach — including that the two arrows go opposite ways and
+  clamp at the ends
 
 ## Taking a screenshot
 
@@ -69,6 +70,7 @@ Anything after `--` goes to the editor verbatim. Script verbs:
 | `color #rrggbb[aa]` | Recolour the selected entry, as the sliders do |
 | `color+` | Append an opaque white entry and select it |
 | `color-` | Drop the selected entry |
+| `move-` / `move+` | Move the selected entry one slot left / right |
 | `save` | Save to the current path |
 | `wait [N]` | Idle for N frames |
 
@@ -131,6 +133,10 @@ Expected:
 | Click `+` | A white swatch appears at the end, selected, and `[N/N+1]` updates |
 | Click `-` | The selected swatch goes; the selection stays in range |
 | Click `-` down to one colour | The last one stays; a warning is logged |
+| Select an entry, click `<` | It swaps with its left neighbour and stays selected |
+| Click `<` at the first slot | Nothing moves, and `*` does not appear |
+| Click `>` at the last slot | Nothing moves, and `*` does not appear |
+| Reorder after painting | The painted pixels keep their colours |
 | Add colours past the sidebar height, then wheel over them | The swatches scroll; the slider row stays docked |
 | Move the cursor over the canvas | The coordinate and tile update |
 | Move the cursor off the canvas | "off canvas" |
@@ -147,8 +153,8 @@ offset is pinned at 0. Add several tiles first.
 
 1. **No undo/redo.** `src/history.rs` is tested but unwired — and palette edits
    are not recorded into it, so recolouring cannot be undone.
-2. **No palette reordering** — colours can be selected, recoloured, added and
-   removed, but not moved.
+2. **No drag-and-drop reordering** — the `<` and `>` buttons move the selected
+   entry one slot; a swatch cannot be dragged to a new position.
 3. **No tile removal binding.**
 4. **Single tile row.** Storage supports more; nothing creates them.
 5. **No runtime zoom** — `--scale` is set at startup.
@@ -159,10 +165,10 @@ offset is pinned at 0. Add several tiles first.
 ## Last Validated
 
 - Date: 2026-07-27
-- 113 unit tests passing; `./tests/test_application.sh` green
+- 121 unit tests passing; `./tests/test_application.sh` green
 - Verified visually on X11 with an AMD Radeon 780M (radv): open, save, reopen,
   select, paint, add tile, scroll, tile boundaries, recolour an entry via the
-  `color` verb, add and remove entries
-- Not yet verified by hand: dragging the sliders and clicking `+` / `-` with a
-  real pointer. The observers behind them are unit tested; the pointer path
+  `color` verb, add and remove entries, reorder one with `move-`
+- Not yet verified by hand: dragging the sliders and clicking the four buttons
+  with a real pointer. The observers behind them are unit tested; the pointer path
   through Feathers is not.

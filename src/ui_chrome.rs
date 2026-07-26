@@ -29,6 +29,7 @@ use bevy::feathers::display::label_small;
 use bevy::feathers::focus::FocusIndicator;
 use bevy::feathers::theme::{ThemeBackgroundColor, ThemeToken, UiTheme};
 use bevy::feathers::FeathersPlugins;
+use bevy::ecs::system::IntoObserverSystem;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::scene::SceneList;
@@ -43,8 +44,8 @@ use crate::config::{
     SWATCH_SIZE,
 };
 use crate::document::{
-    AddPaletteColorRequested, DocumentPath, RemovePaletteColorRequested, SelectColorRequested,
-    SetPaletteColorRequested,
+    AddPaletteColorRequested, DocumentPath, MovePaletteColorRequested,
+    RemovePaletteColorRequested, SelectColorRequested, SetPaletteColorRequested,
 };
 use crate::palette::Palette;
 
@@ -78,6 +79,19 @@ pub struct StatusStrip;
 
 #[derive(Component)]
 pub struct StatusLabel;
+
+/// Draw order for the two chrome roots. They overlap in the bottom-left corner
+/// — the sidebar is full-height, the status strip full-width — and the strip
+/// wins, which is why the sidebar reserves `STATUS_BAR_HEIGHT` of bottom
+/// padding.
+///
+/// These are declared rather than left to chance. `ui_stack_system` sorts roots
+/// by `(GlobalZIndex, ZIndex)` with a *stable* sort, so equal keys fall back to
+/// query iteration order — which is archetype order, not spawn order. Adding a
+/// widget elsewhere in the sidebar silently flipped this once and hid the file
+/// name behind the sidebar.
+const SIDEBAR_Z: i32 = 0;
+const STATUS_STRIP_Z: i32 = 1;
 
 /// The channels the sidebar edits, in the order they are stacked. RGBA rather
 /// than HSL because that is how a colour is stored and reported: what the
@@ -215,6 +229,7 @@ fn build_chrome(mut commands: Commands, palette: Res<Palette>) {
                 ..default()
             },
             BackgroundColor(SIDEBAR_BACKGROUND),
+            GlobalZIndex(SIDEBAR_Z),
             Sidebar,
         ))
         .id();
@@ -262,6 +277,7 @@ fn build_chrome(mut commands: Commands, palette: Res<Palette>) {
                 ..default()
             },
             BackgroundColor(STATUS_BACKGROUND),
+            GlobalZIndex(STATUS_STRIP_Z),
             StatusStrip,
         ))
         .with_children(|parent| {
@@ -303,11 +319,19 @@ fn build_palette_editor(commands: &mut Commands, sidebar: Entity, selected: Srgb
         ))
         .id();
 
+    // Reorder first, then grow and shrink: the two arrows move the entry the
+    // sliders below are editing, so they belong next to it.
     commands
-        .spawn_scene(add_color_button())
+        .spawn_scene(editor_button("<", on_move_left_clicked))
         .insert(ChildOf(buttons));
     commands
-        .spawn_scene(remove_color_button())
+        .spawn_scene(editor_button(">", on_move_right_clicked))
+        .insert(ChildOf(buttons));
+    commands
+        .spawn_scene(editor_button("+", on_add_clicked))
+        .insert(ChildOf(buttons));
+    commands
+        .spawn_scene(editor_button("-", on_remove_clicked))
         .insert(ChildOf(buttons));
 
     for (caption, channel) in EDITED_CHANNELS {
@@ -391,6 +415,31 @@ fn on_channel_dragged(
     }
 }
 
+/// Shifts the selected entry one slot, clamping at both ends rather than
+/// disabling the button — a clamped move arrives as `from == to`, which the
+/// applier treats as the no-op it is.
+fn on_move_left_clicked(
+    _activate: On<Activate>,
+    palette: Res<Palette>,
+    mut requests: MessageWriter<MovePaletteColorRequested>,
+) {
+    requests.write(MovePaletteColorRequested {
+        from: palette.selected,
+        to: palette.selected.saturating_sub(1),
+    });
+}
+
+fn on_move_right_clicked(
+    _activate: On<Activate>,
+    palette: Res<Palette>,
+    mut requests: MessageWriter<MovePaletteColorRequested>,
+) {
+    requests.write(MovePaletteColorRequested {
+        from: palette.selected,
+        to: (palette.selected + 1).min(palette.len().saturating_sub(1)),
+    });
+}
+
 fn on_add_clicked(
     _activate: On<Activate>,
     mut requests: MessageWriter<AddPaletteColorRequested>,
@@ -420,27 +469,23 @@ fn channel_slider(channel: ColorChannel, value: f32) -> impl Scene {
     }
 }
 
-fn add_color_button() -> impl Scene {
+/// One of the editor's four buttons: a captioned Feathers button that runs
+/// `action` when activated. They share a width, so the row divides evenly
+/// however many there are.
+fn editor_button<I, M>(caption: &'static str, action: I) -> impl Scene
+where
+    I: IntoObserverSystem<Activate, (), M> + Clone + Send + Sync + 'static,
+    M: Send + Sync + 'static,
+{
     bsn! {
         @FeathersButton {
-            @caption: {Box::new(bsn_list![label_small("+")]) as Box<dyn SceneList>},
+            @caption: {Box::new(bsn_list![label_small(caption)]) as Box<dyn SceneList>},
         }
         Node {
             flex_grow: 1.0,
+            flex_basis: px(0),
         }
-        on(on_add_clicked)
-    }
-}
-
-fn remove_color_button() -> impl Scene {
-    bsn! {
-        @FeathersButton {
-            @caption: {Box::new(bsn_list![label_small("-")]) as Box<dyn SceneList>},
-        }
-        Node {
-            flex_grow: 1.0,
-        }
-        on(on_remove_clicked)
+        on(action)
     }
 }
 
@@ -716,12 +761,14 @@ mod tests {
         sets: Vec<(usize, Srgba)>,
         adds: Vec<Srgba>,
         removes: Vec<usize>,
+        moves: Vec<(usize, usize)>,
     }
 
     fn record(
         mut sets: MessageReader<SetPaletteColorRequested>,
         mut adds: MessageReader<AddPaletteColorRequested>,
         mut removes: MessageReader<RemovePaletteColorRequested>,
+        mut moves: MessageReader<MovePaletteColorRequested>,
         mut recorded: ResMut<Recorded>,
     ) {
         let seen: Vec<(usize, Srgba)> = sets.read().map(|m| (m.index, m.color)).collect();
@@ -730,6 +777,8 @@ mod tests {
         recorded.adds.extend(seen);
         let seen: Vec<usize> = removes.read().map(|m| m.index).collect();
         recorded.removes.extend(seen);
+        let seen: Vec<(usize, usize)> = moves.read().map(|m| (m.from, m.to)).collect();
+        recorded.moves.extend(seen);
     }
 
     /// The sidebar's widgets without the sidebar: the observers are attached to
@@ -741,6 +790,7 @@ mod tests {
             .add_message::<SetPaletteColorRequested>()
             .add_message::<AddPaletteColorRequested>()
             .add_message::<RemovePaletteColorRequested>()
+            .add_message::<MovePaletteColorRequested>()
             .init_resource::<Recorded>()
             .insert_resource(palette)
             .add_systems(Update, record);
@@ -797,5 +847,56 @@ mod tests {
         app.update();
 
         assert_eq!(app.world().resource::<Recorded>().removes, vec![2]);
+    }
+
+    /// Drives both arrows from one selection, so the pair cannot silently be
+    /// wired up the same way round.
+    #[test]
+    fn the_arrows_shift_the_selection_in_opposite_directions() {
+        let mut app = widget_app(Palette::with_colors(vec![RED, GREEN, RED]));
+        app.world_mut().resource_mut::<Palette>().select(1);
+
+        let left = app
+            .world_mut()
+            .spawn_empty()
+            .observe(on_move_left_clicked)
+            .id();
+        let right = app
+            .world_mut()
+            .spawn_empty()
+            .observe(on_move_right_clicked)
+            .id();
+        app.world_mut().trigger(Activate { entity: left });
+        app.world_mut().trigger(Activate { entity: right });
+        app.update();
+
+        assert_eq!(app.world().resource::<Recorded>().moves, vec![(1, 0), (1, 2)]);
+    }
+
+    /// The arrows clamp instead of disabling themselves, so the ends ask to move
+    /// an entry onto itself — which the applier treats as a no-op.
+    #[test]
+    fn the_arrows_clamp_at_both_ends() {
+        let mut app = widget_app(Palette::with_colors(vec![RED, GREEN]));
+
+        let left = app
+            .world_mut()
+            .spawn_empty()
+            .observe(on_move_left_clicked)
+            .id();
+        let right = app
+            .world_mut()
+            .spawn_empty()
+            .observe(on_move_right_clicked)
+            .id();
+
+        // Selected 0: left is already as far as it goes.
+        app.world_mut().trigger(Activate { entity: left });
+        app.world_mut().resource_mut::<Palette>().select(1);
+        // Selected 1 of 2: right is already as far as it goes.
+        app.world_mut().trigger(Activate { entity: right });
+        app.update();
+
+        assert_eq!(app.world().resource::<Recorded>().moves, vec![(0, 0), (1, 1)]);
     }
 }

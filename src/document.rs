@@ -57,6 +57,16 @@ pub struct RemovePaletteColorRequested {
     pub index: usize,
 }
 
+/// Move a palette entry to another slot, carrying the selection with it.
+///
+/// `from == to` is the normal way to say "already at the end of the row" — the
+/// arrow buttons clamp rather than disappear — so it is a no-op, not an error.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct MovePaletteColorRequested {
+    pub from: usize,
+    pub to: usize,
+}
+
 // ============================================================================
 // RESOURCES
 // ============================================================================
@@ -96,6 +106,7 @@ impl Plugin for DocumentStatePlugin {
             .add_message::<SetPaletteColorRequested>()
             .add_message::<AddPaletteColorRequested>()
             .add_message::<RemovePaletteColorRequested>()
+            .add_message::<MovePaletteColorRequested>()
             .add_systems(
                 Update,
                 // Chained, not merely grouped: painting reads the palette these
@@ -138,17 +149,19 @@ fn apply_color_selection(
     }
 }
 
-/// The three palette-editing requests, applied in a fixed order: overwrite,
-/// then append, then remove. That order is what makes "add a colour and tint it
-/// in the same frame" work, since the append is what the following select lands
-/// on.
+/// The palette-editing requests, applied in a fixed order: overwrite, then
+/// append, then remove, then move. That order is what makes "add a colour and
+/// tint it in the same frame" work, since the append is what the following
+/// select lands on.
 ///
-/// A palette edit changes what a save writes but not a single pixel, so it
-/// marks the document unsaved without bumping `revision`.
+/// A palette edit changes what a save writes but not a single pixel — pixels
+/// hold colours, not palette indices — so it marks the document unsaved without
+/// bumping `revision`.
 fn apply_palette_edits(
     mut sets: MessageReader<SetPaletteColorRequested>,
     mut adds: MessageReader<AddPaletteColorRequested>,
     mut removes: MessageReader<RemovePaletteColorRequested>,
+    mut moves: MessageReader<MovePaletteColorRequested>,
     mut palette: ResMut<Palette>,
     mut document: ResMut<AtlasDocument>,
 ) {
@@ -189,6 +202,24 @@ fn apply_palette_edits(
             warn!(
                 "ignoring removal of colour {} — palette has {}",
                 request.index,
+                palette.len()
+            );
+        }
+    }
+
+    for request in moves.read() {
+        // The arrows clamp at both ends rather than vanishing, so asking to move
+        // an entry onto itself is how "already first" and "already last" arrive.
+        if request.from == request.to {
+            continue;
+        }
+        if palette.reorder_color(request.from, request.to) {
+            changed = true;
+        } else {
+            warn!(
+                "ignoring a move of colour {} to {} — palette has {}",
+                request.from,
+                request.to,
                 palette.len()
             );
         }
@@ -492,6 +523,84 @@ mod tests {
 
         assert_eq!(app.world().resource::<Palette>().len(), 3);
         assert!(!app.world().resource::<AtlasDocument>().unsaved);
+    }
+
+    #[test]
+    fn moving_a_colour_carries_the_selection_with_it() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<Palette>().select(0);
+        app.world_mut()
+            .write_message(MovePaletteColorRequested { from: 0, to: 2 });
+        app.update();
+
+        let palette = app.world().resource::<Palette>();
+        assert_eq!(palette.colors, vec![RED, BLUE, transparent()]);
+        assert_eq!(
+            palette.selected, 2,
+            "the selection follows its colour, not its old slot"
+        );
+        assert!(app.world().resource::<AtlasDocument>().unsaved);
+    }
+
+    #[test]
+    fn moving_a_colour_past_a_selected_neighbour_shifts_the_selection() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<Palette>().select(1);
+        app.world_mut()
+            .write_message(MovePaletteColorRequested { from: 2, to: 0 });
+        app.update();
+
+        let palette = app.world().resource::<Palette>();
+        assert_eq!(palette.colors, vec![BLUE, transparent(), RED]);
+        assert_eq!(
+            palette.selected, 2,
+            "the selected colour moved right to make room"
+        );
+    }
+
+    /// The arrows clamp at both ends rather than disappearing, so this is how
+    /// "already first" arrives — it must not dirty the document.
+    #[test]
+    fn moving_a_colour_onto_itself_is_a_no_op() {
+        let mut app = test_app();
+        let before = app.world().resource::<Palette>().colors.clone();
+        app.world_mut()
+            .write_message(MovePaletteColorRequested { from: 0, to: 0 });
+        app.update();
+
+        assert_eq!(app.world().resource::<Palette>().colors, before);
+        assert!(!app.world().resource::<AtlasDocument>().unsaved);
+    }
+
+    #[test]
+    fn moving_to_a_missing_index_changes_nothing() {
+        let mut app = test_app();
+        let before = app.world().resource::<Palette>().colors.clone();
+        app.world_mut()
+            .write_message(MovePaletteColorRequested { from: 0, to: 42 });
+        app.update();
+
+        assert_eq!(app.world().resource::<Palette>().colors, before);
+        assert!(!app.world().resource::<AtlasDocument>().unsaved);
+    }
+
+    /// A move reorders the sidecar but repaints nothing: pixels store colours,
+    /// not palette indices.
+    #[test]
+    fn moving_a_colour_leaves_the_pixels_alone() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<Palette>().select(1);
+        app.world_mut().write_message(PaintPixelRequested { x: 0, y: 0 });
+        app.update();
+        let revision_after_paint = app.world().resource::<AtlasDocument>().revision;
+
+        app.world_mut()
+            .write_message(MovePaletteColorRequested { from: 1, to: 2 });
+        app.update();
+
+        let document = app.world().resource::<AtlasDocument>();
+        assert_eq!(document.get_pixel_at(0, 0), RED, "the painted pixel keeps its colour");
+        assert_eq!(document.revision, revision_after_paint);
     }
 
     #[test]

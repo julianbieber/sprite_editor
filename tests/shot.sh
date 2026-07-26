@@ -15,7 +15,8 @@
 #   ./tests/shot.sh /tmp/wide.png "tile+5; scroll+3" -- art/demo --scale 16
 #
 # Script verbs: select N | paint X,Y | tile+[N] | scroll+[N] | scroll-[N]
-#               color #rrggbb[aa] | color+ | color- | save | wait [N]
+#               color #rrggbb[aa] | color+ | color- | move- | move+
+#               save | wait [N]
 
 set -euo pipefail
 

@@ -12,8 +12,9 @@ colour, click to paint pixels, edit the palette, add tiles on the right, scroll 
 wide atlas, save.
 **Undo/redo is deliberately not wired up** — `src/history.rs` is tested and
 compiles but nothing calls it (`#[allow(dead_code)]` on the module declaration).
-Note that palette edits are therefore not recorded into it either. Reordering
-colours, zoom and a file picker are out of scope so far.
+Note that palette edits are therefore not recorded into it either. Zoom and a
+file picker are out of scope so far, as is reordering by dragging a swatch —
+the arrow buttons do it instead.
 
 Design specs live outside the repo, one `.hmml` per plugin:
 `~/fun_repos/hobby-mimisbrunnr/notes/bevy_sprite_editor/initial_editor/fixup/`.
@@ -24,7 +25,7 @@ sheet; both are kept current, but `src/` wins if they disagree.
 
 ```bash
 cargo check --all-targets        # fast feedback
-cargo test                       # 113 unit tests, in #[cfg(test)] mods inside src/*.rs
+cargo test                       # 121 unit tests, in #[cfg(test)] mods inside src/*.rs
 cargo test a_wide_atlas          # single test by name
 cargo test palette::             # one module
 cargo run -- art/demo            # open art/demo.png + art/demo.atlas.json
@@ -46,10 +47,11 @@ editor screenshots itself:
 ```
 
 then `Read` the PNG. Script verbs: `select N`, `paint X,Y`, `tile+[N]`,
-`scroll+[N]`, `scroll-[N]`, `color #rrggbb[aa]`, `color+`, `color-`, `save`,
-`wait [N]`; one step per frame. The three `color` verbs stand in for the
-sidebar's sliders and buttons — a script has no pointer to drag with — and act
-on the selected entry, exactly as those widgets do. The capture
+`scroll+[N]`, `scroll-[N]`, `color #rrggbb[aa]`, `color+`, `color-`, `move-`,
+`move+`, `save`, `wait [N]`; one step per frame. The `color` and `move` verbs
+stand in for the sidebar's sliders and buttons — a script has no pointer to drag
+with — and act on the selected entry, clamping at the ends exactly as those
+widgets do. The capture
 uses Bevy's own `Screenshot` API, so no window manager, focus or `sleep` is
 involved and the result is deterministic for a build. `--warmup-frames` (default
 30) waits out the window manager's initial resize before the first step, and
@@ -69,7 +71,7 @@ Seven plugins, composed in `main.rs`. Two rules explain most of the layout:
 request messages (`PaintPixelRequested`, `SelectColorRequested`,
 `AddTileRequested`, `ScrollRequested`, `SaveRequested`,
 `SetPaletteColorRequested`, `AddPaletteColorRequested`,
-`RemovePaletteColorRequested`); `document.rs` and
+`RemovePaletteColorRequested`, `MovePaletteColorRequested`); `document.rs` and
 `file_io.rs` are the only places that apply them. This is what makes the
 screenshot harness trustworthy — it drives the same messages a human does, so a
 passing screenshot cannot hide broken interaction. If you add an interaction, add
@@ -174,6 +176,19 @@ different things:
 Keeping Feathers here was a deliberate choice by the repo owner over plain
 `Node` + `BackgroundColor`. Don't "simplify" it away.
 
+### The two chrome roots declare their z-order
+
+The sidebar is full-height and the status strip is full-width, so they overlap in
+the bottom-left corner. The strip wins — which is why the sidebar reserves
+`STATUS_BAR_HEIGHT` of bottom padding — and both carry an explicit
+`GlobalZIndex` (`SIDEBAR_Z` / `STATUS_STRIP_Z`) to say so.
+
+Leave them equal and it still *looks* right, until it doesn't: `ui_stack_system`
+stable-sorts roots by `(GlobalZIndex, ZIndex)`, so equal keys fall back to query
+iteration order, which is archetype order rather than spawn order. Adding two
+buttons inside the sidebar flipped it once and hid the file name behind the
+sidebar. If you add a third chrome root, give it a z.
+
 ### The channel sliders are a view, not a store
 
 The four `FeathersColorSlider`s under the swatches edit the *selected* entry.
@@ -225,6 +240,7 @@ observer silently never fires.
 | Left click / drag on canvas | Paint the hovered pixel with the selected colour |
 | Left click a swatch | Select that colour |
 | Wheel over the swatches | Scroll them, when the palette overflows the sidebar |
+| Click `<` / `>` | Move the selected entry one slot; clamps at the ends |
 | Drag an R/G/B/A slider | Set that channel of the selected colour |
 | Click `+` | Append an opaque white entry and select it |
 | Click `-` | Drop the selected entry (refused for the last one) |

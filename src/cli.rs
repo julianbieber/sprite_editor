@@ -62,9 +62,11 @@ bevy_sprite_editor [PATH] [options]
   --help                print this and exit
 
 Keys: left click paints, Space adds a tile, Left/Right or A/D scroll, Ctrl+S saves.
-The sidebar's RGBA sliders recolour the selected entry; + and - add and drop one.
+The sidebar's RGBA sliders recolour the selected entry; < > move it, + and -
+add and drop one.
 Script verbs: select N | paint X,Y | tile+[N] | scroll+[N] | scroll-[N]
-              color #rrggbb[aa] | color+ | color- | save | wait [N]";
+              color #rrggbb[aa] | color+ | color- | move- | move+
+              save | wait [N]";
 
 /// Parses argv. Unknown flags and unparsable numbers warn and are ignored rather
 /// than aborting — the editor should still open.
