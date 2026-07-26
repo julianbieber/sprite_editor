@@ -40,6 +40,12 @@ pub const SWATCH_SIZE: f32 = 44.0;
 pub const SWATCH_GAP: f32 = 6.0;
 pub const SWATCH_BORDER: f32 = 2.0;
 
+/// Vertical gap between the rows of the palette editor under the swatches.
+pub const EDITOR_ROW_GAP: f32 = 5.0;
+
+/// Font size for the editor's channel captions and its two buttons.
+pub const EDITOR_FONT_SIZE: f32 = 11.0;
+
 // ============================================================================
 // COLOURS
 // ============================================================================
@@ -85,6 +91,10 @@ pub const DEFAULT_PALETTE: &[(f32, f32, f32, f32)] = &[
 /// The colour a new document starts drawing with: the first opaque entry.
 pub const DEFAULT_SELECTED_COLOR: usize = 1;
 
+/// What the `+` button appends. Opaque white reads as "a new colour to set"
+/// rather than looking like nothing happened, which appending transparent would.
+pub const NEW_PALETTE_COLOR: Srgba = Srgba::new(1.0, 1.0, 1.0, 1.0);
+
 // ============================================================================
 // HISTORY CONFIGURATION
 // ============================================================================
@@ -129,6 +139,30 @@ pub fn color_to_hex(color: Srgba) -> String {
     )
 }
 
+/// The inverse of [`color_to_hex`]. Accepts `#rrggbbaa` and `#rrggbb` (alpha
+/// defaults to opaque), with or without the leading `#`.
+///
+/// Only the dev harness's `color` verb parses colours from text; the sidebar
+/// edits channels numerically.
+pub fn hex_to_color(text: &str) -> Option<Srgba> {
+    let digits = text.trim().trim_start_matches('#');
+    if digits.len() != 6 && digits.len() != 8 {
+        return None;
+    }
+
+    let channel = |offset: usize| u8::from_str_radix(&digits[offset..offset + 2], 16).ok();
+    Some(Srgba::new(
+        channel(0)? as f32 / 255.0,
+        channel(2)? as f32 / 255.0,
+        channel(4)? as f32 / 255.0,
+        if digits.len() == 8 {
+            channel(6)? as f32 / 255.0
+        } else {
+            1.0
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +178,30 @@ mod tests {
     fn default_selected_colour_is_opaque() {
         let (_, _, _, a) = DEFAULT_PALETTE[DEFAULT_SELECTED_COLOR];
         assert_eq!(a, 1.0, "a new document must start on a visible colour");
+    }
+
+    #[test]
+    fn hex_parsing_inverts_hex_formatting() {
+        for color in [
+            transparent(),
+            Srgba::new(1.0, 0.0, 0.0, 1.0),
+            Srgba::new(0.2, 0.4, 0.6, 0.8),
+        ] {
+            let round_tripped = hex_to_color(&color_to_hex(color)).unwrap();
+            assert_eq!(color_to_hex(round_tripped), color_to_hex(color));
+        }
+    }
+
+    #[test]
+    fn six_digit_hex_is_opaque() {
+        assert_eq!(hex_to_color("#00ff00").unwrap(), Srgba::new(0.0, 1.0, 0.0, 1.0));
+        assert_eq!(hex_to_color("00ff00").unwrap(), Srgba::new(0.0, 1.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn a_malformed_hex_string_is_rejected_rather_than_guessed_at() {
+        assert!(hex_to_color("#fff").is_none());
+        assert!(hex_to_color("#gggggg").is_none());
+        assert!(hex_to_color("").is_none());
     }
 }

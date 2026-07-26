@@ -67,6 +67,34 @@ echo "5. reopen the saved file, widen it, and scroll"
     -- "$WORK.png"
 
 echo
+echo "6. edit the palette, save, and reopen"
+# The palette is only half of a document: the sidecar has to carry an edited one
+# back, or every recolour would be lost on the next open.
+PAL="$OUT/doc/palette"
+rm -f "$PAL.png" "$PAL.atlas.json"
+./tests/shot.sh "$OUT/03-palette-edited.png" \
+    "select 2; color #ff8800ff; color+; color #22aaffff; paint 1,1; paint 2,2; color-; save" \
+    -- "$PAL"
+
+# Started from the 17-colour built-in palette: one added, one removed.
+COLORS=$(grep -c '"r":' "$PAL.atlas.json")
+if [ "$COLORS" != "17" ]; then
+    echo "   FAIL: sidecar has $COLORS colours, expected 17" >&2
+    exit 1
+fi
+echo "   sidecar carries $COLORS colours"
+
+# Entry 2 was recoloured to #ff8800: red 1.0, green 0.53..., blue 0.0.
+if grep -q '"g": 0.5333' "$PAL.atlas.json"; then
+    echo "   sidecar carries the recoloured entry"
+else
+    echo "   FAIL: the recoloured entry is not in the sidecar" >&2
+    exit 1
+fi
+
+./tests/shot.sh "$OUT/04-palette-reopened.png" "" -- "$PAL.png"
+
+echo
 echo "=========================================="
 echo "All checks passed"
 echo "=========================================="
@@ -81,5 +109,12 @@ echo "  02-scrolled.png — 8 tiles wide, scrolled 3 tiles right. The green"
 echo "                    diagonal painted at x=24 starts exactly at the left"
 echo "                    edge, and tiles 0-2 (the red/blue marks) have"
 echo "                    scrolled off."
+echo "  03-palette-edited.png"
+echo "                  — swatch 2 is orange (was white), the added blue entry"
+echo "                    was removed again, the two painted pixels are blue,"
+echo "                    and the sliders show the selected colour."
+echo "  04-palette-reopened.png"
+echo "                  — the same file reopened: the orange swatch survived the"
+echo "                    round trip through the sidecar, and there is no '*'."
 echo
 echo "To drive it by hand:  cargo run -- $WORK.png"

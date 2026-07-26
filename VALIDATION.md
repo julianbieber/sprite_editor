@@ -23,7 +23,7 @@ Screenshots land in `target/screenshots/`. Individually:
 
 ```bash
 cargo check --all-targets
-cargo test                           # 89 unit tests
+cargo test                           # 113 unit tests
 cargo test a_wide_atlas              # one test
 cargo build --release
 ```
@@ -34,16 +34,22 @@ cargo build --release
   existing pixel (the one place a silent corruption could hide)
 - `palette.rs` — selection stays valid through add/remove/reorder; sidecar
   round trip; a sidecar with a missing or overshooting selection
+- `config.rs` — hex formatting and parsing invert each other
 - `file_io.rs` — save/load round trip including a **wide** atlas pixel-for-pixel
   and alpha survival; rejection of a ragged image and of a future format version
 - `canvas_view.rs` — that drawing and hit testing are exact inverses, scrolled or
   not; scroll clamping at both ends, including re-clamping after the atlas shrinks
 - `document.rs` — requests applied in order; out-of-bounds and no-op paints leave
-  the revision alone; a multi-pixel drag is one revision bump
+  the revision alone; a multi-pixel drag is one revision bump; a palette edit
+  dirties the file without bumping the revision, and the last colour cannot be
+  removed
 - `input.rs` — click, drag-once-per-pixel, release ends the stroke, key bindings
 - `dev_harness.rs` — script parsing and one-step-per-frame execution
 - `cli.rs` — argument parsing, suffix stripping, bad input falling back
-- `ui_chrome.rs` — theme tokens generated from the loaded palette
+- `ui_chrome.rs` — theme tokens generated from the loaded palette, and dropped
+  when it shrinks; channel read/write round trips; and the three sidebar widgets
+  driven by triggering their observers, which is the one part of the sidebar a
+  screenshot cannot reach
 
 ## Taking a screenshot
 
@@ -60,6 +66,9 @@ Anything after `--` goes to the editor verbatim. Script verbs:
 | `paint X,Y` | Paint atlas pixel (X, Y) |
 | `tile+[N]` | Add N tiles on the right (default 1) |
 | `scroll+[N]` / `scroll-[N]` | Scroll N tiles right / left (default 1) |
+| `color #rrggbb[aa]` | Recolour the selected entry, as the sliders do |
+| `color+` | Append an opaque white entry and select it |
+| `color-` | Drop the selected entry |
 | `save` | Save to the current path |
 | `wait [N]` | Idle for N frames |
 
@@ -73,16 +82,18 @@ back to `xvfb-run`.
 Because the harness emits the same request messages real input does, a passing
 screenshot means the production path works — it is not a mock. The exception is
 the raw input layer itself (mouse position → hovered pixel, and the Feathers
-button activation): those are covered by unit tests, not by the screenshots.
+button and slider activation): those are covered by unit tests, not by the
+screenshots.
 
 ## Reading a screenshot
 
 The status strip makes a capture self-describing:
 
 ```
-demo.png*    12,3   tile 1    #ff0000ff    3x1 tiles of 8px
-    |        |      |         |            |
-    |        |      |         |            atlas size and tile size
+demo.png*    12,3   tile 1    #ff0000ff [3/17]    3x1 tiles of 8px
+    |        |      |         |         |          |
+    |        |      |         |         |          atlas size and tile size
+    |        |      |         |         selected entry / palette size
     |        |      |         selected colour
     |        |      which tile the cursor is in
     |        hovered pixel, or "off canvas"
@@ -100,9 +111,11 @@ cargo run -- --help
 Expected:
 
 - Window titled "Bevy Sprite Atlas Editor"
-- **Left:** palette sidebar, one swatch per colour, wrapping. The first entry is
-  fully transparent so it reads as an empty slot; the selected swatch has a white
-  outline (black, the first opaque colour, by default).
+- **Left:** palette sidebar. Swatches at the top, one per colour, wrapping — the
+  first entry is fully transparent so it reads as an empty slot, and the selected
+  swatch has a white outline (black, the first opaque colour, by default).
+  Docked at the bottom: a `+` / `-` row and four channel sliders (R, G, B, A)
+  showing the selected colour, the alpha track over a checkerboard.
 - **Right:** the atlas at the top-left of the canvas area, tile boundaries in
   orange including the far edge, a faint pixel grid inside them.
 - **Bottom:** the status strip.
@@ -113,6 +126,12 @@ Expected:
 | Click the canvas | That pixel takes the selected colour; `*` appears |
 | Hold and drag | A continuous line, one paint per pixel |
 | Click palette entry 0, then a painted pixel | It is erased back to transparent |
+| Drag a channel slider | The swatch and the status hex follow it live; `*` appears |
+| Drag alpha to 0, then paint | Paints transparent, i.e. erases |
+| Click `+` | A white swatch appears at the end, selected, and `[N/N+1]` updates |
+| Click `-` | The selected swatch goes; the selection stays in range |
+| Click `-` down to one colour | The last one stays; a warning is logged |
+| Add colours past the sidebar height, then wheel over them | The swatches scroll; the slider row stays docked |
 | Move the cursor over the canvas | The coordinate and tile update |
 | Move the cursor off the canvas | "off canvas" |
 | `Space` | The atlas widens by one tile; the tile count updates |
@@ -126,8 +145,10 @@ offset is pinned at 0. Add several tiles first.
 
 ## Known Limitations
 
-1. **No undo/redo.** `src/history.rs` is tested but unwired.
-2. **No palette editing** — colours can be selected, not added, removed or reordered.
+1. **No undo/redo.** `src/history.rs` is tested but unwired — and palette edits
+   are not recorded into it, so recolouring cannot be undone.
+2. **No palette reordering** — colours can be selected, recoloured, added and
+   removed, but not moved.
 3. **No tile removal binding.**
 4. **Single tile row.** Storage supports more; nothing creates them.
 5. **No runtime zoom** — `--scale` is set at startup.
@@ -137,7 +158,11 @@ offset is pinned at 0. Add several tiles first.
 
 ## Last Validated
 
-- Date: 2026-07-26
-- 89 unit tests passing; `./tests/test_application.sh` green
+- Date: 2026-07-27
+- 113 unit tests passing; `./tests/test_application.sh` green
 - Verified visually on X11 with an AMD Radeon 780M (radv): open, save, reopen,
-  select, paint, add tile, scroll, tile boundaries
+  select, paint, add tile, scroll, tile boundaries, recolour an entry via the
+  `color` verb, add and remove entries
+- Not yet verified by hand: dragging the sliders and clicking `+` / `-` with a
+  real pointer. The observers behind them are unit tested; the pointer path
+  through Feathers is not.

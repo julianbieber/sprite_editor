@@ -164,8 +164,11 @@ impl Palette {
     // ------------------------------------------------------------------------
     // Colour management
     //
-    // Palette editing has no UI yet; these exist because `history` is specced
-    // against them and stays compiling.
+    // These are pure primitives: `remove_color` will happily empty the palette,
+    // because `history` needs it to be the exact inverse of `add_color`. The
+    // "at least one colour" rule is policy and lives with the editing requests
+    // in `document.rs`; `insert_color` and `reorder_color` are still only used
+    // by `history`, which is not wired up.
     // ------------------------------------------------------------------------
 
     pub fn add_color(&mut self, color: Srgba) -> usize {

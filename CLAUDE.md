@@ -8,11 +8,12 @@ A Bevy 0.19 desktop editor for sprite atlases: one image split into square tiles
 edited pixel by pixel with a colour palette. Single binary crate, no workspace.
 
 The supported workflow is: open a file from a CLI argument, select a palette
-colour, click to paint pixels, add tiles on the right, scroll a wide atlas, save.
+colour, click to paint pixels, edit the palette, add tiles on the right, scroll a
+wide atlas, save.
 **Undo/redo is deliberately not wired up** — `src/history.rs` is tested and
 compiles but nothing calls it (`#[allow(dead_code)]` on the module declaration).
-Palette editing (add/remove/reorder), zoom and a file picker are also out of
-scope so far.
+Note that palette edits are therefore not recorded into it either. Reordering
+colours, zoom and a file picker are out of scope so far.
 
 Design specs live outside the repo, one `.hmml` per plugin:
 `~/fun_repos/hobby-mimisbrunnr/notes/bevy_sprite_editor/initial_editor/fixup/`.
@@ -23,7 +24,7 @@ sheet; both are kept current, but `src/` wins if they disagree.
 
 ```bash
 cargo check --all-targets        # fast feedback
-cargo test                       # 89 unit tests, in #[cfg(test)] mods inside src/*.rs
+cargo test                       # 113 unit tests, in #[cfg(test)] mods inside src/*.rs
 cargo test a_wide_atlas          # single test by name
 cargo test palette::             # one module
 cargo run -- art/demo            # open art/demo.png + art/demo.atlas.json
@@ -45,7 +46,10 @@ editor screenshots itself:
 ```
 
 then `Read` the PNG. Script verbs: `select N`, `paint X,Y`, `tile+[N]`,
-`scroll+[N]`, `scroll-[N]`, `save`, `wait [N]`; one step per frame. The capture
+`scroll+[N]`, `scroll-[N]`, `color #rrggbb[aa]`, `color+`, `color-`, `save`,
+`wait [N]`; one step per frame. The three `color` verbs stand in for the
+sidebar's sliders and buttons — a script has no pointer to drag with — and act
+on the selected entry, exactly as those widgets do. The capture
 uses Bevy's own `Screenshot` API, so no window manager, focus or `sleep` is
 involved and the result is deterministic for a build. `--warmup-frames` (default
 30) waits out the window manager's initial resize before the first step, and
@@ -54,8 +58,8 @@ involved and the result is deterministic for a build. `--warmup-frames` (default
 
 The status strip is deliberately informative so a screenshot is
 self-describing — file name, `*` when unsaved, hovered pixel, its tile, the
-selected colour as hex, and the atlas size. Read values off it rather than
-guessing.
+selected colour as hex, `[selected/count]` for the palette, and the atlas size.
+Read values off it rather than guessing.
 
 ## Architecture
 
@@ -63,7 +67,9 @@ Seven plugins, composed in `main.rs`. Two rules explain most of the layout:
 
 **1. Input never mutates state.** `input.rs` and `dev_harness.rs` only emit
 request messages (`PaintPixelRequested`, `SelectColorRequested`,
-`AddTileRequested`, `ScrollRequested`, `SaveRequested`); `document.rs` and
+`AddTileRequested`, `ScrollRequested`, `SaveRequested`,
+`SetPaletteColorRequested`, `AddPaletteColorRequested`,
+`RemovePaletteColorRequested`); `document.rs` and
 `file_io.rs` are the only places that apply them. This is what makes the
 screenshot harness trustworthy — it drives the same messages a human does, so a
 passing screenshot cannot hide broken interaction. If you add an interaction, add
@@ -82,7 +88,7 @@ screen and atlas space. Everything else asks it.
 | `file_io.rs` | PNG + JSON codec, startup load, save on request |
 | `canvas_view.rs` | camera viewport fitting, scroll offset, cursor → pixel |
 | `canvas_render.rs` | the atlas texture, sprite placement, tile grid |
-| `ui_chrome.rs` | Feathers palette sidebar and status strip |
+| `ui_chrome.rs` | Feathers palette sidebar (swatches, RGBA sliders, +/-) and status strip |
 | `input.rs` | keys and mouse → requests |
 | `dev_harness.rs` | script → requests → screenshot → exit |
 | `history.rs` | undo/redo. Compiles, tested, **unwired** |
@@ -101,7 +107,9 @@ encoder assumed row-major, which corrupted every atlas wider than one tile.
 
 `set_pixel_at` returns whether anything changed, and `touch()` is the single
 place `revision`/`unsaved` move. `revision` is what the renderer diffs against,
-so a no-op paint must not bump it.
+so a no-op paint must not bump it. A palette edit changes what a save writes but
+no pixel, so it calls `mark_unsaved()` instead — bumping `revision` there would
+re-upload the texture on every frame of a slider drag.
 
 ### Two cameras, and their order matters
 
@@ -149,12 +157,43 @@ it:
 seed_document (PreStartup) → DocumentLoad (file_io) → ChromeBuild (ui_chrome)
 ```
 
-A file's own palette must reach the theme before the swatches spawn. Adding or
-removing a colour at runtime would need the theme rebuilt *and* the sidebar
-respawned — which is why palette editing is out of scope for now.
+A file's own palette must reach the theme before the swatches spawn. The same
+derivation holds at runtime, and the palette is editable, so it costs two
+different things:
+
+- **Recolouring** rewrites that entry's token. Feathers repaints every
+  `ThemeBackgroundColor` whenever `UiTheme` changes, so the swatch follows and no
+  entity is touched. `sync_palette_theme` does this, guarded on
+  `palette.is_changed()` — touching `UiTheme` every frame would repaint the whole
+  tree every frame.
+- **Adding or removing** changes how many tokens exist, which no repaint can
+  express, so `rebuild_swatches` despawns the swatches and respawns them. It runs
+  *after* the theme sync, since a new swatch reads its token on insert. Both are
+  guarded on the palette's length actually changing.
 
 Keeping Feathers here was a deliberate choice by the repo owner over plain
 `Node` + `BackgroundColor`. Don't "simplify" it away.
+
+### The channel sliders are a view, not a store
+
+The four `FeathersColorSlider`s under the swatches edit the *selected* entry.
+They never hold the colour: dragging one emits `SetPaletteColorRequested` with
+the **whole** colour it wants, and `sync_channel_sliders` writes the position
+back from `Palette` — so even mid-drag the thumb shows what the palette accepted,
+not what the pointer asked for. `SliderValue` is an immutable component, so that
+write goes through `Commands::insert`, and both it and `SliderBaseColor` are only
+written when they actually differ; an unconditional write would count as a change
+and make Feathers rebuild every track gradient every frame.
+
+They are RGBA rather than HSL deliberately: that is how a colour is stored and
+how the status strip reports it, so the sliders and the hex cannot drift.
+
+`on_channel_dragged`, `on_add_clicked` and `on_remove_clicked` are named
+functions rather than closures inside the `bsn!` blocks so the tests can trigger
+them on a bare entity — the harness has no pointer, so this is the only part of
+the sidebar a screenshot cannot exercise. Note that `ValueChange<T>` is generic:
+triggering one in a test with an untyped `0.5` infers `f64` and the `f32`
+observer silently never fires.
 
 ## Conventions
 
@@ -185,6 +224,10 @@ Keeping Feathers here was a deliberate choice by the repo owner over plain
 |---|---|
 | Left click / drag on canvas | Paint the hovered pixel with the selected colour |
 | Left click a swatch | Select that colour |
+| Wheel over the swatches | Scroll them, when the palette overflows the sidebar |
+| Drag an R/G/B/A slider | Set that channel of the selected colour |
+| Click `+` | Append an opaque white entry and select it |
+| Click `-` | Drop the selected entry (refused for the last one) |
 | `Space` | Add a tile on the right |
 | `Arrow Left` / `A` | Scroll one tile left |
 | `Arrow Right` / `D` | Scroll one tile right |

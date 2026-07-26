@@ -35,6 +35,28 @@ pub struct AddTileRequested {
     pub tiles: u32,
 }
 
+/// Overwrite one palette entry. The channel sliders emit one of these per drag
+/// frame, with the whole colour rather than the channel that moved — so the
+/// applier stays a plain assignment and the sliders stay a view of the palette.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct SetPaletteColorRequested {
+    pub index: usize,
+    pub color: Srgba,
+}
+
+/// Append a colour and select it.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct AddPaletteColorRequested {
+    pub color: Srgba,
+}
+
+/// Drop a palette entry. Refused for the last one — something must stay
+/// selected, or there would be nothing to draw with.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct RemovePaletteColorRequested {
+    pub index: usize,
+}
+
 // ============================================================================
 // RESOURCES
 // ============================================================================
@@ -71,13 +93,21 @@ impl Plugin for DocumentStatePlugin {
         app.add_message::<PaintPixelRequested>()
             .add_message::<SelectColorRequested>()
             .add_message::<AddTileRequested>()
+            .add_message::<SetPaletteColorRequested>()
+            .add_message::<AddPaletteColorRequested>()
+            .add_message::<RemovePaletteColorRequested>()
             .add_systems(
                 Update,
+                // Chained, not merely grouped: painting reads the palette these
+                // first three write, and a script that selects, edits and paints
+                // in one frame must see its own edits.
                 (
                     apply_color_selection,
+                    apply_palette_edits,
                     apply_paint_requests,
                     apply_add_tile,
                 )
+                    .chain()
                     .in_set(DocumentEdit),
             );
     }
@@ -105,6 +135,67 @@ fn apply_color_selection(
                 palette.len()
             );
         }
+    }
+}
+
+/// The three palette-editing requests, applied in a fixed order: overwrite,
+/// then append, then remove. That order is what makes "add a colour and tint it
+/// in the same frame" work, since the append is what the following select lands
+/// on.
+///
+/// A palette edit changes what a save writes but not a single pixel, so it
+/// marks the document unsaved without bumping `revision`.
+fn apply_palette_edits(
+    mut sets: MessageReader<SetPaletteColorRequested>,
+    mut adds: MessageReader<AddPaletteColorRequested>,
+    mut removes: MessageReader<RemovePaletteColorRequested>,
+    mut palette: ResMut<Palette>,
+    mut document: ResMut<AtlasDocument>,
+) {
+    let mut changed = false;
+
+    for request in sets.read() {
+        // Bound first: the borrow has to end before the arms can read `len()`.
+        let previous = palette.replace_color(request.index, request.color);
+        match previous {
+            // A drag re-sends the colour it already set; only the first of those
+            // is a real edit.
+            Some(previous) if previous == request.color => {}
+            Some(_) => changed = true,
+            None => warn!(
+                "ignoring an edit to colour {} — palette has {}",
+                request.index,
+                palette.len()
+            ),
+        }
+    }
+
+    for request in adds.read() {
+        let index = palette.add_color(request.color);
+        // Select it: the editor below the swatches always edits the selection,
+        // so adding a colour you cannot immediately change would be useless.
+        palette.select(index);
+        changed = true;
+    }
+
+    for request in removes.read() {
+        if palette.len() <= 1 {
+            warn!("refusing to remove the last colour — something must stay selected");
+            continue;
+        }
+        if palette.remove_color(request.index).is_some() {
+            changed = true;
+        } else {
+            warn!(
+                "ignoring removal of colour {} — palette has {}",
+                request.index,
+                palette.len()
+            );
+        }
+    }
+
+    if changed {
+        document.mark_unsaved();
     }
 }
 
@@ -178,6 +269,7 @@ mod tests {
     use super::*;
 
     const RED: Srgba = Srgba::new(1.0, 0.0, 0.0, 1.0);
+    const BLUE: Srgba = Srgba::new(0.0, 0.0, 1.0, 1.0);
 
     /// A minimal app with just the document plugin, so the appliers can be
     /// driven by messages exactly as they are at runtime.
@@ -186,11 +278,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .add_plugins(DocumentStatePlugin)
             .insert_resource(AtlasDocument::with_tile_size(4))
-            .insert_resource(Palette::with_colors(vec![
-                transparent(),
-                RED,
-                Srgba::new(0.0, 0.0, 1.0, 1.0),
-            ]));
+            .insert_resource(Palette::with_colors(vec![transparent(), RED, BLUE]));
         app
     }
 
@@ -268,6 +356,142 @@ mod tests {
         let document = app.world().resource::<AtlasDocument>();
         assert_eq!(document.width_in_tiles, 3);
         assert!(document.unsaved);
+    }
+
+    #[test]
+    fn editing_a_colour_repaints_nothing_but_dirties_the_file() {
+        let mut app = test_app();
+        app.world_mut().write_message(SetPaletteColorRequested {
+            index: 1,
+            color: BLUE,
+        });
+        app.update();
+
+        assert_eq!(app.world().resource::<Palette>().get_color(1), Some(BLUE));
+        let document = app.world().resource::<AtlasDocument>();
+        assert!(document.unsaved, "a save would now write a different sidecar");
+        assert_eq!(
+            document.revision, 0,
+            "no pixel moved, so the texture must not be re-uploaded"
+        );
+    }
+
+    #[test]
+    fn editing_the_selected_colour_changes_what_the_next_paint_writes() {
+        let mut app = test_app();
+        app.world_mut().write_message(SelectColorRequested { index: 1 });
+        app.world_mut().write_message(SetPaletteColorRequested {
+            index: 1,
+            color: BLUE,
+        });
+        app.world_mut().write_message(PaintPixelRequested { x: 0, y: 0 });
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<AtlasDocument>().get_pixel_at(0, 0),
+            BLUE,
+            "the edit must be visible to the paint in the same frame"
+        );
+    }
+
+    #[test]
+    fn re_setting_the_same_colour_does_not_dirty_the_document() {
+        let mut app = test_app();
+        app.world_mut().write_message(SetPaletteColorRequested {
+            index: 1,
+            color: RED,
+        });
+        app.update();
+
+        assert!(
+            !app.world().resource::<AtlasDocument>().unsaved,
+            "a drag re-sends the colour it already set; that is not an edit"
+        );
+    }
+
+    #[test]
+    fn an_edit_to_a_missing_index_changes_nothing() {
+        let mut app = test_app();
+        let before = app.world().resource::<Palette>().colors.clone();
+        app.world_mut().write_message(SetPaletteColorRequested {
+            index: 42,
+            color: BLUE,
+        });
+        app.update();
+
+        assert_eq!(app.world().resource::<Palette>().colors, before);
+        assert!(!app.world().resource::<AtlasDocument>().unsaved);
+    }
+
+    #[test]
+    fn adding_a_colour_selects_it() {
+        let mut app = test_app();
+        app.world_mut()
+            .write_message(AddPaletteColorRequested { color: BLUE });
+        app.update();
+
+        let palette = app.world().resource::<Palette>();
+        assert_eq!(palette.len(), 4);
+        assert_eq!(palette.selected, 3, "the editor edits the selection");
+        assert_eq!(palette.selected_color(), BLUE);
+        assert!(app.world().resource::<AtlasDocument>().unsaved);
+    }
+
+    #[test]
+    fn adding_then_editing_in_one_frame_lands_on_the_new_colour() {
+        let mut app = test_app();
+        app.world_mut()
+            .write_message(AddPaletteColorRequested { color: BLUE });
+        app.update();
+        app.world_mut().write_message(SetPaletteColorRequested {
+            index: 3,
+            color: RED,
+        });
+        app.update();
+
+        assert_eq!(app.world().resource::<Palette>().get_color(3), Some(RED));
+    }
+
+    #[test]
+    fn removing_a_colour_keeps_the_selection_in_range() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<Palette>().select(2);
+        app.world_mut()
+            .write_message(RemovePaletteColorRequested { index: 2 });
+        app.update();
+
+        let palette = app.world().resource::<Palette>();
+        assert_eq!(palette.len(), 2);
+        assert!(palette.selected < palette.len());
+        assert!(app.world().resource::<AtlasDocument>().unsaved);
+    }
+
+    #[test]
+    fn the_last_colour_cannot_be_removed() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(DocumentStatePlugin)
+            .insert_resource(AtlasDocument::with_tile_size(4))
+            .insert_resource(Palette::with_colors(vec![RED]));
+        app.world_mut()
+            .write_message(RemovePaletteColorRequested { index: 0 });
+        app.update();
+
+        let palette = app.world().resource::<Palette>();
+        assert_eq!(palette.len(), 1, "there must always be something to draw with");
+        assert_eq!(palette.selected_color(), RED);
+        assert!(!app.world().resource::<AtlasDocument>().unsaved);
+    }
+
+    #[test]
+    fn removing_a_missing_index_changes_nothing() {
+        let mut app = test_app();
+        app.world_mut()
+            .write_message(RemovePaletteColorRequested { index: 42 });
+        app.update();
+
+        assert_eq!(app.world().resource::<Palette>().len(), 3);
+        assert!(!app.world().resource::<AtlasDocument>().unsaved);
     }
 
     #[test]

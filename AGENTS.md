@@ -40,7 +40,11 @@ Per-plugin design specs (Mental Model Language) live in the notes repo, not here
 - **Storage:** Palette saved with the atlas, in the JSON sidecar
 - **Entry 0 is fully transparent,** so erasing needs no separate tool
 - **Initial draw colour:** the first opaque entry (black)
-- **Not yet implemented:** add / remove / reorder colours
+- **Editing:** four Feathers colour sliders under the swatches (R, G, B, A) set
+  the *selected* entry; `+` appends an opaque white entry and selects it, `-`
+  drops the selected one. The last colour cannot be removed — something must
+  stay selected to draw with.
+- **Not yet implemented:** reordering colours
 
 ### Drawing
 - **Granularity:** Pixel-by-pixel
@@ -71,12 +75,14 @@ Per-plugin design specs (Mental Model Language) live in the notes repo, not here
 +------------------+----------------------------------------------+
 |                  |                                              |
 |  Palette         |   Atlas canvas                               |
-|  sidebar         |   (own camera + viewport, scrolls            |
-|  (Feathers       |    horizontally, tile boundaries drawn)       |
-|   swatches)      |                                              |
+|  swatches        |   (own camera + viewport, scrolls            |
+|  (Feathers,      |    horizontally, tile boundaries drawn)       |
+|   wrapping)      |                                              |
 |                  |                                              |
+|  [ + ] [ - ]     |                                              |
+|  R G B A sliders |                                              |
 +------------------+----------------------------------------------+
-| file* | x,y tile N | #rrggbbaa | WxH tiles of Npx               |
+| file* | x,y tile N | #rrggbbaa [sel/count] | WxH tiles of Npx   |
 +----------------------------------------------------------------+
 ```
 
@@ -185,7 +191,9 @@ bevy_sprite_editor [PATH] [options]
 ```
 
 Script verbs: `select N`, `paint X,Y`, `tile+[N]`, `scroll+[N]`, `scroll-[N]`,
-`save`, `wait [N]` — one step per frame, semicolon separated.
+`color #rrggbb[aa]`, `color+`, `color-`, `save`, `wait [N]` — one step per
+frame, semicolon separated. The three `color` verbs stand in for the sidebar's
+sliders and buttons, which no script can point at, and act on the selection.
 
 ---
 
@@ -224,7 +232,8 @@ drawing and hit testing cannot drift apart.
 ### Working
 1. Open a document from a CLI argument (PNG + optional JSON sidecar)
 2. Save back to that path, or to `untitled` when none was given
-3. Palette sidebar built from the loaded palette; click to select
+3. Palette sidebar built from the loaded palette; click to select, RGBA sliders
+   to recolour the selection, `+` / `-` to add and remove entries
 4. Click and drag to paint pixels
 5. Add a tile on the right (`Space`)
 6. Scroll horizontally by whole tiles, clamped
@@ -234,8 +243,9 @@ drawing and hit testing cannot drift apart.
 9. Scripted dev harness with self-capture and exit
 
 ### Not implemented
-1. Undo / redo — `history.rs` exists, tested, unwired
-2. Palette editing: add / remove / reorder colours
+1. Undo / redo — `history.rs` exists, tested, unwired, and palette edits are
+   not recorded into it
+2. Reordering palette colours (`Palette::reorder_color` exists, unbound)
 3. Removing a tile (`AtlasDocument::remove_tile_from_right` exists, unbound)
 4. Multiple tile rows (`height_in_tiles` is always 1; the storage supports more)
 5. Zoom at runtime (`--scale` is startup only)
@@ -257,7 +267,14 @@ drawing and hit testing cannot drift apart.
   space does not depend on the sidebar width.
 - **One texture, not one sprite per pixel.**
 - **Feathers for the palette sidebar,** with theme tokens generated per loaded
-  palette colour rather than a hardcoded list.
+  palette colour rather than a hardcoded list. Recolouring rewrites a token and
+  Feathers repaints the swatch; adding or removing changes how many tokens there
+  are, so the swatches are respawned.
+- **The channel sliders are RGBA, not HSL,** so what they show and what the
+  status strip's hex reports cannot drift, and no colour-space round trip can
+  lose a value.
+- **The sliders are a view of the palette,** never a second store: they emit a
+  request and read their position back from `Palette`, even mid-drag.
 - **Scroll keys:** Arrow Left/Right *and* A/D.
 - **Coordinate system:** top-left origin for atlas coordinates.
 - **Colour representation:** `Srgba`, with `ColorData`/`PaletteData` mirrors for
