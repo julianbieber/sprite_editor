@@ -5,9 +5,14 @@
 //! the actual interaction is broken.
 //!
 //! ```bash
-//! cargo run -- demo --script "select 3; paint 2,3; tile+; scroll+" \
+//! cargo run -- demo --script "select 3; color #ff8800; paint 2,3; tile+" \
 //!                   --screenshot /tmp/shot.png
 //! ```
+//!
+//! `color`, `color+`, `color-`, `move-` and `move+` stand in for the sidebar's
+//! channel sliders and its four buttons, which have no pointer to drive them
+//! here — they emit the same requests those widgets do, against the selected
+//! entry, and clamp at the ends the same way.
 //!
 //! The window manager may resize the window a frame or two after it opens, which
 //! changes the canvas rect. `warmup_frames` waits that out before the first step,
@@ -24,7 +29,11 @@ use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 
 use crate::canvas_view::ScrollRequested;
 use crate::cli::LaunchOptions;
-use crate::document::{AddTileRequested, PaintPixelRequested, SelectColorRequested};
+use crate::config::{hex_to_color, NEW_PALETTE_COLOR};
+use crate::document::{
+    AddPaletteColorRequested, AddTileRequested, MovePaletteColorRequested, PaintPixelRequested,
+    RemovePaletteColorRequested, SelectColorRequested, SetPaletteColorRequested,
+};
 use crate::file_io::SaveRequested;
 
 /// How long to wait for a capture before giving up.
@@ -35,7 +44,8 @@ const SCREENSHOT_TIMEOUT_FRAMES: u32 = 600;
 // ============================================================================
 
 /// One scripted action. Each runs on its own frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// No `Eq`: `SetColor` carries f32 channels.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DevStep {
     Select(usize),
     Paint(u32, u32),
@@ -43,6 +53,14 @@ pub enum DevStep {
     Scroll(i32),
     Save,
     Wait(u32),
+    /// Recolour the selected entry — what dragging the channel sliders does.
+    SetColor(Srgba),
+    /// Append a colour and select it, as the `+` button does.
+    AddColor,
+    /// Drop the selected entry, as the `−` button does.
+    RemoveColor,
+    /// Shift the selected entry one slot, as the `<` and `>` buttons do.
+    MoveColor(i32),
 }
 
 #[derive(Resource, Debug, Default)]
@@ -83,7 +101,21 @@ fn parse_step(part: &str) -> Option<DevStep> {
         None => (part, ""),
     };
 
-    // `tile+`, `tile+3`, `scroll-2` carry their argument in the verb.
+    // `tile+`, `tile+3`, `scroll-2`, `color+` carry their argument in the verb.
+    if verb == "color+" {
+        return Some(DevStep::AddColor);
+    }
+    if verb == "color-" {
+        return Some(DevStep::RemoveColor);
+    }
+    // `move-` / `move+` rather than `color<` / `color>`, so a script never needs
+    // quoting to survive a shell.
+    if verb == "move-" {
+        return Some(DevStep::MoveColor(-1));
+    }
+    if verb == "move+" {
+        return Some(DevStep::MoveColor(1));
+    }
     if let Some(count) = verb.strip_prefix("tile+") {
         return Some(DevStep::AddTile(count_or(count, 1)));
     }
@@ -103,6 +135,13 @@ fn parse_step(part: &str) -> Option<DevStep> {
             }
         },
         "paint" => parse_coordinate(argument),
+        "color" => match hex_to_color(argument) {
+            Some(color) => Some(DevStep::SetColor(color)),
+            None => {
+                warn!("script: `color` needs #rrggbb or #rrggbbaa, got {argument:?}");
+                None
+            }
+        },
         "tile" => Some(DevStep::AddTile(count_or(argument, 1))),
         "save" => Some(DevStep::Save),
         "wait" => Some(DevStep::Wait(count_or(argument, 1))),
@@ -172,13 +211,21 @@ fn load_script(options: Res<LaunchOptions>, mut script: ResMut<DevScript>) {
 }
 
 /// One step per frame, so the same script always yields the same screenshot.
+///
+/// `Palette` is read, never written: `color` and `color-` act on the selected
+/// entry, exactly as the sidebar's sliders and `−` button do.
 fn run_dev_script(
     mut script: ResMut<DevScript>,
+    palette: Option<Res<crate::palette::Palette>>,
     mut paint: MessageWriter<PaintPixelRequested>,
     mut select: MessageWriter<SelectColorRequested>,
     mut add_tile: MessageWriter<AddTileRequested>,
     mut scroll: MessageWriter<ScrollRequested>,
     mut save: MessageWriter<SaveRequested>,
+    mut set_color: MessageWriter<SetPaletteColorRequested>,
+    mut add_color: MessageWriter<AddPaletteColorRequested>,
+    mut remove_color: MessageWriter<RemovePaletteColorRequested>,
+    mut move_color: MessageWriter<MovePaletteColorRequested>,
 ) {
     if !script.enabled {
         return;
@@ -216,6 +263,34 @@ fn run_dev_script(
         }
         DevStep::Wait(frames) => {
             script.wait_frames = frames.saturating_sub(1);
+        }
+        DevStep::SetColor(color) => {
+            if let Some(index) = palette.as_deref().map(|p| p.selected) {
+                set_color.write(SetPaletteColorRequested { index, color });
+            }
+        }
+        DevStep::AddColor => {
+            add_color.write(AddPaletteColorRequested {
+                color: NEW_PALETTE_COLOR,
+            });
+        }
+        DevStep::RemoveColor => {
+            if let Some(index) = palette.as_deref().map(|p| p.selected) {
+                remove_color.write(RemovePaletteColorRequested { index });
+            }
+        }
+        DevStep::MoveColor(direction) => {
+            if let Some(palette) = palette.as_deref() {
+                // Clamped the same way the buttons clamp, so a script at the end
+                // of the row behaves exactly as a click there would.
+                let from = palette.selected;
+                let to = if direction < 0 {
+                    from.saturating_sub(1)
+                } else {
+                    (from + 1).min(palette.len().saturating_sub(1))
+                };
+                move_color.write(MovePaletteColorRequested { from, to });
+            }
         }
     }
 }
@@ -292,6 +367,32 @@ mod tests {
     }
 
     #[test]
+    fn the_palette_editing_verbs_parse() {
+        assert_eq!(
+            parse_script("color+; color #ff8800; color-"),
+            vec![
+                DevStep::AddColor,
+                DevStep::SetColor(Srgba::new(1.0, 136.0 / 255.0, 0.0, 1.0)),
+                DevStep::RemoveColor,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_reordering_verbs_parse() {
+        assert_eq!(
+            parse_script("move-; move+"),
+            vec![DevStep::MoveColor(-1), DevStep::MoveColor(1)]
+        );
+    }
+
+    #[test]
+    fn a_colour_without_a_valid_hex_string_is_skipped() {
+        assert_eq!(parse_script("color; color zzz; select 1"), vec![DevStep::Select(1)]);
+    }
+
+
+    #[test]
     fn whitespace_and_empty_segments_are_tolerated() {
         assert_eq!(
             parse_script("  select 1 ;; paint 0 , 0 ;  "),
@@ -333,6 +434,10 @@ mod tests {
             .add_message::<AddTileRequested>()
             .add_message::<ScrollRequested>()
             .add_message::<SaveRequested>()
+            .add_message::<SetPaletteColorRequested>()
+            .add_message::<AddPaletteColorRequested>()
+            .add_message::<RemovePaletteColorRequested>()
+            .add_message::<MovePaletteColorRequested>()
             .insert_resource(DevScript {
                 steps: parse_script("select 3; paint 1,2"),
                 settle_frames: 1,
@@ -382,6 +487,10 @@ mod tests {
             .add_message::<AddTileRequested>()
             .add_message::<ScrollRequested>()
             .add_message::<SaveRequested>()
+            .add_message::<SetPaletteColorRequested>()
+            .add_message::<AddPaletteColorRequested>()
+            .add_message::<RemovePaletteColorRequested>()
+            .add_message::<MovePaletteColorRequested>()
             .insert_resource(DevScript {
                 steps: parse_script("wait 3; paint 0,0"),
                 settle_frames: 1,
@@ -421,6 +530,10 @@ mod tests {
             .add_message::<AddTileRequested>()
             .add_message::<ScrollRequested>()
             .add_message::<SaveRequested>()
+            .add_message::<SetPaletteColorRequested>()
+            .add_message::<AddPaletteColorRequested>()
+            .add_message::<RemovePaletteColorRequested>()
+            .add_message::<MovePaletteColorRequested>()
             .insert_resource(DevScript {
                 steps: parse_script("paint 0,0"),
                 enabled: false,

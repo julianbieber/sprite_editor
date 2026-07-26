@@ -158,9 +158,19 @@ impl AtlasDocument {
         true
     }
 
-    /// Marks the document changed. Every accepted mutation goes through here.
+    /// Marks the pixels changed. Every accepted mutation of the grid goes
+    /// through here, and `revision` is what the renderer diffs against.
     pub fn touch(&mut self) {
         self.revision += 1;
+        self.mark_unsaved();
+    }
+
+    /// Marks the file dirty without claiming the pixels moved.
+    ///
+    /// Palette edits land here: they change what a save writes, but not the
+    /// texture, and bumping `revision` for them would force a pointless upload
+    /// on every frame of a slider drag.
+    pub fn mark_unsaved(&mut self) {
         self.unsaved = true;
     }
 
@@ -405,6 +415,14 @@ mod tests {
         doc.touch();
         assert_eq!(doc.revision, 1);
         assert!(doc.unsaved);
+    }
+
+    #[test]
+    fn mark_unsaved_dirties_without_forcing_a_texture_upload() {
+        let mut doc = AtlasDocument::new();
+        doc.mark_unsaved();
+        assert!(doc.unsaved);
+        assert_eq!(doc.revision, 0, "the pixels did not change");
     }
 
     #[test]

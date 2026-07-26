@@ -40,7 +40,14 @@ Per-plugin design specs (Mental Model Language) live in the notes repo, not here
 - **Storage:** Palette saved with the atlas, in the JSON sidecar
 - **Entry 0 is fully transparent,** so erasing needs no separate tool
 - **Initial draw colour:** the first opaque entry (black)
-- **Not yet implemented:** add / remove / reorder colours
+- **Editing:** four Feathers colour sliders under the swatches (R, G, B, A) set
+  the *selected* entry; `<` and `>` move it one slot, `+` appends an opaque white
+  entry and selects it, `-` drops the selected one. The last colour cannot be
+  removed — something must stay selected to draw with, and the arrows clamp at
+  the ends rather than disabling themselves.
+- **Reordering does not repaint anything.** Pixels store colours, not palette
+  indices, so a move changes the sidecar's order and nothing else.
+- **Not yet implemented:** reordering by dragging a swatch
 
 ### Drawing
 - **Granularity:** Pixel-by-pixel
@@ -71,12 +78,14 @@ Per-plugin design specs (Mental Model Language) live in the notes repo, not here
 +------------------+----------------------------------------------+
 |                  |                                              |
 |  Palette         |   Atlas canvas                               |
-|  sidebar         |   (own camera + viewport, scrolls            |
-|  (Feathers       |    horizontally, tile boundaries drawn)       |
-|   swatches)      |                                              |
+|  swatches        |   (own camera + viewport, scrolls            |
+|  (Feathers,      |    horizontally, tile boundaries drawn)       |
+|   wrapping)      |                                              |
 |                  |                                              |
+|  [<][>][+][-]    |                                              |
+|  R G B A sliders |                                              |
 +------------------+----------------------------------------------+
-| file* | x,y tile N | #rrggbbaa | WxH tiles of Npx               |
+| file* | x,y tile N | #rrggbbaa [sel/count] | WxH tiles of Npx   |
 +----------------------------------------------------------------+
 ```
 
@@ -160,6 +169,10 @@ a screenshot proof that the real path works.
 |-------|--------|
 | Mouse Left click / drag (canvas) | Paint the hovered pixel |
 | Mouse Left click (swatch) | Select that colour |
+| Mouse wheel (swatches) | Scroll them when the palette overflows the sidebar |
+| Mouse Left drag (R/G/B/A slider) | Set that channel of the selected colour |
+| Mouse Left click (`<` / `>`) | Move the selected entry one slot; clamps at the ends |
+| Mouse Left click (`+` / `-`) | Append an entry and select it / drop the selected one |
 | `Space` | Add a tile on the right |
 | `Arrow Left` or `A` | Scroll one tile left |
 | `Arrow Right` or `D` | Scroll one tile right |
@@ -185,7 +198,10 @@ bevy_sprite_editor [PATH] [options]
 ```
 
 Script verbs: `select N`, `paint X,Y`, `tile+[N]`, `scroll+[N]`, `scroll-[N]`,
-`save`, `wait [N]` — one step per frame, semicolon separated.
+`color #rrggbb[aa]`, `color+`, `color-`, `move-`, `move+`, `save`, `wait [N]` —
+one step per frame, semicolon separated. The `color` and `move` verbs stand in
+for the sidebar's sliders and buttons, which no script can point at; they act on
+the selection and clamp at the ends the same way.
 
 ---
 
@@ -224,7 +240,8 @@ drawing and hit testing cannot drift apart.
 ### Working
 1. Open a document from a CLI argument (PNG + optional JSON sidecar)
 2. Save back to that path, or to `untitled` when none was given
-3. Palette sidebar built from the loaded palette; click to select
+3. Palette sidebar built from the loaded palette; click to select, RGBA sliders
+   to recolour the selection, `<` / `>` to reorder, `+` / `-` to add and remove
 4. Click and drag to paint pixels
 5. Add a tile on the right (`Space`)
 6. Scroll horizontally by whole tiles, clamped
@@ -234,8 +251,9 @@ drawing and hit testing cannot drift apart.
 9. Scripted dev harness with self-capture and exit
 
 ### Not implemented
-1. Undo / redo — `history.rs` exists, tested, unwired
-2. Palette editing: add / remove / reorder colours
+1. Undo / redo — `history.rs` exists, tested, unwired, and palette edits are
+   not recorded into it
+2. Reordering by dragging a swatch — the arrow buttons do it instead
 3. Removing a tile (`AtlasDocument::remove_tile_from_right` exists, unbound)
 4. Multiple tile rows (`height_in_tiles` is always 1; the storage supports more)
 5. Zoom at runtime (`--scale` is startup only)
@@ -257,7 +275,20 @@ drawing and hit testing cannot drift apart.
   space does not depend on the sidebar width.
 - **One texture, not one sprite per pixel.**
 - **Feathers for the palette sidebar,** with theme tokens generated per loaded
-  palette colour rather than a hardcoded list.
+  palette colour rather than a hardcoded list. Recolouring rewrites a token and
+  Feathers repaints the swatch; adding or removing changes how many tokens there
+  are, so the swatches are respawned.
+- **The channel sliders are RGBA, not HSL,** so what they show and what the
+  status strip's hex reports cannot drift, and no colour-space round trip can
+  lose a value.
+- **The sliders are a view of the palette,** never a second store: they emit a
+  request and read their position back from `Palette`, even mid-drag.
+- **Reordering is two arrow buttons, not drag-and-drop.** It reuses the existing
+  `Palette::reorder_color`, goes through a request like everything else, and the
+  dev harness can drive it — so it is screenshot-testable, which a drag is not.
+- **The two chrome roots declare their `GlobalZIndex`.** `ui_stack_system`
+  stable-sorts roots by z, so equal keys fall back to archetype order; leaving
+  them equal let an unrelated widget flip the sidebar over the status strip.
 - **Scroll keys:** Arrow Left/Right *and* A/D.
 - **Coordinate system:** top-left origin for atlas coordinates.
 - **Colour representation:** `Srgba`, with `ColorData`/`PaletteData` mirrors for
