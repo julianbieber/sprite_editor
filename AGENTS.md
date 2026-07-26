@@ -2,83 +2,87 @@
 
 ## Overview
 
-A Bevy-based editor for creating and editing sprite atlases. A sprite atlas is a single image file split into multiple square tiles. The editor provides pixel-level editing with a color palette, tile management, and undo/redo functionality.
+A Bevy-based editor for creating and editing sprite atlases. A sprite atlas is a
+single image file split into multiple square tiles. The editor provides
+pixel-level editing with a colour palette, tile management, and PNG + JSON
+persistence.
 
 **Technology Stack:**
 - **Engine:** Bevy 0.19
-- **UI:** Bevy sprites (Feathers planned for future)
+- **UI:** `bevy_ui` with `bevy_feathers` widgets for the palette; the canvas is a
+  world-space sprite on its own camera
 - **Language:** Rust
+
+Per-plugin design specs (Mental Model Language) live in the notes repo, not here:
+`~/fun_repos/hobby-mimisbrunnr/notes/bevy_sprite_editor/initial_editor/fixup/*.hmml`
 
 ---
 
 ## Core Requirements
 
 ### Atlas Structure
-- **Tile dimensions:** Square, configurable at startup (default: 8x8 pixels)
-- **Initial atlas:** 1 tile (8x8 pixels)
-- **Tile growth:** Adding a tile appends one fully transparent tile to the right (grows atlas width by 1 tile)
-- **Pixel display:** Each atlas pixel rendered as 64x64 screen pixels
-  - Therefore: each 8x8 tile = 512x512 screen pixels
-- **Scrolling:** Horizontal only, via keyboard keys
-  - `o umlaut` (\u00F6) key: scroll left
-  - `#` key: scroll right
+- **Tile dimensions:** Square, configurable at startup with `--tile-size`
+  (default: 8x8 pixels)
+- **Initial atlas:** 1 tile
+- **Tile growth:** Adding a tile appends one fully transparent tile column on the
+  right (grows atlas width by 1 tile)
+- **Pixel display:** Each atlas pixel is drawn at `--scale` screen pixels
+  (default 32), so an 8x8 tile is 256x256 on screen
+- **Storage:** Pixels are row-major over the **whole atlas image**
+  (`index = y * width_in_pixels + x`). Tiles are a view concept only.
+- **Scrolling:** Horizontal only, by whole tiles, clamped to the atlas bounds
 
-### Color Palette
-- **Capacity:** Unlimited colors
-- **Visual representation:** Color swatches (clickable)
-- **Selection:** Active color has a visible border
-- **Operations required:**
-  - Add color
-  - Remove color
-  - Reorder colors (drag-and-drop or buttons)
-  - Select color (click)
-- **Default palette:** Pre-loaded with standard colors
-- **Storage:** Palette saved with atlas (per-project)
-- **Initial draw color:** Fully transparent (rgba(0,0,0,0))
+### Colour Palette
+- **Capacity:** Unlimited colours
+- **Visual representation:** Feathers buttons coloured from the palette, one per
+  entry, in a left sidebar
+- **Selection:** The active colour carries a white outline
+- **Storage:** Palette saved with the atlas, in the JSON sidecar
+- **Entry 0 is fully transparent,** so erasing needs no separate tool
+- **Initial draw colour:** the first opaque entry (black)
+- **Not yet implemented:** add / remove / reorder colours
 
 ### Drawing
-- **Granularity:** Pixel-by-pixel (click to set pixel)
-- **Tools (v1):** Single-pixel pencil only
-- **Color source:** Selected palette color (active with border)
-- **Eraser:** Not explicitly required; transparent can be a palette color
+- **Granularity:** Pixel-by-pixel
+- **Tools:** Single-pixel pencil. Holding the button and dragging paints a
+  continuous line, at most once per pixel entered.
+- **Colour source:** the selected palette colour
 
 ### Undo/Redo
-- **Required:** Yes
-- **History depth:** 100 actions
-- **Actions to track:**
-  - Pixel color changes
-  - Tile additions
-  - Palette modifications (add/remove/reorder)
+- **Not wired up.** `src/history.rs` implements and tests a 100-deep action
+  stack, but nothing calls it. Reattaching it is a separate task.
 
 ### File I/O
-- **Format:** PNG + JSON (separate files)
-- **PNG:** The atlas image data
-- **JSON:** Metadata including:
-  - Tile size (width)
-  - Atlas dimensions (tiles wide, tiles tall)
-  - Color palette (list of RGBA colors)
-  - Optional: undo history? (TBD)
+- **Format:** PNG + JSON (separate files), format version `1.0`
+- **PNG:** the atlas image, same dimensions and pixel order as the document
+- **JSON** (`<base>.atlas.json`): version, tile size, atlas dimensions in tiles,
+  and the palette
+- **Opening:** the first positional CLI argument. `demo`, `demo.png` and
+  `demo.atlas.json` all name the same document.
+- **A missing sidecar is fine** — the PNG loads with the `--tile-size` fallback
+  and the built-in palette.
+- **An image whose size is not a whole multiple of the tile size is rejected**
+  rather than silently padded.
+- **Saving** with no path given writes `./untitled.png` + `./untitled.atlas.json`.
 
 ### UI Layout
 
 ```
-+------------------+-----------------------------+
-|                  |                             |
-|  Color Palette   |   Atlas Viewport            |
-|  (left sidebar)  |   (scrollable)              |
-|                  |                             |
-|  +------------+   |   +----+----+----+        |
-|  | [COLOR]    |   |   |    |    |    | ...   |
-|  +------------+   |   |    |    |    |        |
-|  | [COLOR]    |   |   +----+----+----+        |
-|  +------------+   |                             |
-|  | ...         |   |   [Atlas renders here]     |
-|  +------------+   |                             |
-|  | [+ Add]    |   |                             |
-|  +------------+   |                             |
-+------------------+-----------------------------+
-                      [Status: X,Y | Color: #RRGGBBAA]
++------------------+----------------------------------------------+
+|                  |                                              |
+|  Palette         |   Atlas canvas                               |
+|  sidebar         |   (own camera + viewport, scrolls            |
+|  (Feathers       |    horizontally, tile boundaries drawn)       |
+|   swatches)      |                                              |
+|                  |                                              |
++------------------+----------------------------------------------+
+| file* | x,y tile N | #rrggbbaa | WxH tiles of Npx               |
++----------------------------------------------------------------+
 ```
+
+The canvas camera's `viewport` is fitted each frame to the region the sidebar and
+status strip leave free, so canvas world space is independent of the sidebar
+width.
 
 ---
 
@@ -86,73 +90,67 @@ A Bevy-based editor for creating and editing sprite atlases. A sprite atlas is a
 
 ```
 bevy_sprite_editor/
-├── AGENTS.md                    # This file
-├── Cargo.toml                   # Dependencies
-├── docs/
-│   └── mml/                     # Mental Model Language specs
-│       ├── atlas.mml           # Atlas data & operations
-│       ├── palette.mml         # Color palette system
-│       ├── editor.mml          # Pixel editing & viewport
-│       ├── history.mml         # Undo/redo system
-│       ├── ui.mml              # UI structure
-│       └── file_io.mml         # Save/load flow
+├── AGENTS.md                # This file
+├── CLAUDE.md                # Guidance for Claude Code
+├── VALIDATION.md            # How to validate the build
+├── Cargo.toml
 ├── src/
-│   ├── main.rs                 # Bevy app entry point
-│   ├── config.rs               # App configuration
-│   ├── atlas.rs                # Atlas data model
-│   ├── palette.rs              # Color palette
-│   ├── editor.rs               # Drawing & viewport logic
-│   ├── history.rs              # Undo/redo stack
-│   ├── file_io.rs              # Save/load implementation
-│   └── ui/
-│       ├── mod.rs              # UI module
-│       ├── palette_ui.rs       # Palette sidebar
-│       └── viewport.rs         # Atlas viewport rendering
-└── assets/
-    └── default_palette.json    # Default color palette (planned)
+│   ├── main.rs              # App assembly, cameras, plugin + startup order
+│   ├── cli.rs               # argv -> LaunchOptions
+│   ├── config.rs            # Constants, colours, helpers
+│   ├── atlas.rs             # AtlasDocument: the pixel grid
+│   ├── palette.rs           # Palette + serde mirrors
+│   ├── document.rs          # Edit requests and the systems applying them
+│   ├── file_io.rs           # PNG + JSON codec, load and save
+│   ├── canvas_view.rs       # Camera viewport, scroll, cursor -> pixel
+│   ├── canvas_render.rs     # Atlas texture, sprite, tile grid
+│   ├── ui_chrome.rs         # Feathers sidebar + status strip
+│   ├── input.rs             # Keys and mouse -> requests
+│   ├── dev_harness.rs       # Scripted actions, screenshot, exit
+│   └── history.rs           # Undo/redo (compiles, tested, unwired)
+├── tests/
+│   ├── shot.sh              # Screenshot the editor after a scripted run
+│   └── test_application.sh  # check + test + release + scripted screenshots
+└── docs/
+    ├── mml/                 # Superseded pre-implementation notation, kept for reference
+    └── work_log/
 ```
 
 ---
 
 ## Data Models
 
-### Atlas
 ```rust
-struct Atlas {
-    tile_size: u32,        // 8 (pixels per tile, square)
-    width_in_tiles: u32,   // Number of tiles wide
-    height_in_tiles: u32,  // Number of tiles tall
-    pixels: Vec<Srgba>,    // Flat array: [tile0_row0, tile0_row1, ... tile1_row0, ...]
+struct AtlasDocument {          // Resource
+    tile_size: u32,
+    width_in_tiles: u32,
+    height_in_tiles: u32,       // always 1 in this version
+    pixels: Vec<Srgba>,         // row-major over the whole image
+    revision: u64,              // bumped per accepted mutation
+    unsaved: bool,
+}
+
+struct Palette {                // Resource
+    colors: Vec<Srgba>,
+    selected: usize,            // always valid; there is always a draw colour
+}
+
+struct CanvasView {             // Resource
+    scroll_x: f32,              // screen pixels
+    pixel_scale: f32,
+    rect_min: Vec2,             // canvas region, logical pixels
+    rect_size: Vec2,
 }
 ```
 
-### Palette
-```rust
-struct Palette {
-    colors: Vec<Srgba>,    // Ordered list of RGBA colors
-    selected_index: Option<usize>,  // Currently selected color
-}
+### Edit requests (Bevy 0.19 "messages")
 
-// Color = bevy::prelude::Srgba (RGBA, f32 0.0-1.0)
-```
+`PaintPixelRequested { x, y }`, `SelectColorRequested { index }`,
+`AddTileRequested { tiles }`, `ScrollRequested { tiles }`, `SaveRequested`.
 
-### History
-```rust
-struct History {
-    undo_stack: VecDeque<Action>,  // Max 100 entries
-    redo_stack: VecDeque<Action>,
-}
-
-enum Action {
-    SetPixel { x: u32, y: u32, old_color: Srgba, new_color: Srgba },
-    AddTile,
-    RemoveTile { pixels: Vec<Srgba> },
-    AddColor { color: Srgba, index: usize },
-    RemoveColor { color: Srgba, index: usize },
-    ReorderColor { from: usize, to: usize },
-    SetColor { index: usize, old_color: Srgba, new_color: Srgba },
-}
-```
+Input systems only emit these; `document.rs` and `file_io.rs` are the only
+places that apply them. The dev harness emits the same ones, which is what makes
+a screenshot proof that the real path works.
 
 ---
 
@@ -160,121 +158,121 @@ enum Action {
 
 | Input | Action |
 |-------|--------|
-| Mouse Left Click (viewport) | Set pixel to active palette color |
-| Mouse Left Click (palette) | Select color |
-| `\u00F6` (o umlaut) | Scroll viewport left |
-| `#` / `Digit3` | Scroll viewport right |
-| `Space` | Add tile to right |
-| `Backspace` | Remove tile from right |
-| `Ctrl+Z` | Undo last action |
-| `Ctrl+Y` | Redo last undone action |
-| `Ctrl+S` | Save project (logs to console, file picker TBD) |
-| `Ctrl+O` | Load project (logs to console, file picker TBD) |
-| (TBD) | Add color to palette |
-| (TBD) | Remove color from palette |
-| (TBD) | Reorder palette |
+| Mouse Left click / drag (canvas) | Paint the hovered pixel |
+| Mouse Left click (swatch) | Select that colour |
+| `Space` | Add a tile on the right |
+| `Arrow Left` or `A` | Scroll one tile left |
+| `Arrow Right` or `D` | Scroll one tile right |
+| `Ctrl+S` | Save |
+
+Removing a tile, undo and redo have no binding yet.
+
+---
+
+## Command Line
+
+```
+bevy_sprite_editor [PATH] [options]
+
+  PATH                  document base path; .png / .atlas.json suffixes stripped
+  --tile-size N         tile size for a new document (default 8)
+  --scale N             screen pixels per atlas pixel (default 32)
+  --script "..."        dev harness action script
+  --screenshot FILE     capture to FILE once the script finishes, then exit
+  --warmup-frames N     frames to wait before the script starts (default 30)
+  --settle-frames N     frames to wait before capturing (default 30)
+  --help
+```
+
+Script verbs: `select N`, `paint X,Y`, `tile+[N]`, `scroll+[N]`, `scroll-[N]`,
+`save`, `wait [N]` — one step per frame, semicolon separated.
 
 ---
 
 ## Rendering
 
-### Pixel Scale
-- 1 atlas pixel = 64 screen pixels
-- 1 tile (8x8) = 512x512 screen pixels
-- atlas pixel at (x,y) renders at screen position:
-  - x_screen = x * 64 - viewport_offset_x
-  - y_screen = -y * 64 + viewport_offset_y (flipped because atlas uses top-left origin, Bevy Camera2d has y-up)
+- The atlas is **one** sprite entity showing a single RGBA8 texture the size of
+  the atlas, scaled up with nearest-neighbour sampling
+  (`ImagePlugin::default_nearest`). Entity count does not grow with the atlas.
+- The texture is reuploaded only when `AtlasDocument.revision` changes.
+- The sprite is anchored top-left, so its translation is the atlas origin.
+- Tile boundaries are gizmo lines drawn at every multiple of `tile_size`,
+  including the far edge of the last tile. A fainter pixel grid is drawn
+  underneath when `--scale` is large enough to read.
+- Two cameras: the canvas camera (order 0, own render layer, viewport-fitted,
+  clears) then the UI camera (order 1, no clear, full window, owns bevy_ui).
+  **This order matters** — reversing it renders a black window.
 
-### Colors
-- Transparent: `Srgba::new(0.0, 0.0, 0.0, 0.0)`
-- Palette colors: Stored as `Srgba` (Bevy's RGBA)
-- Pixel rendering: Solid color sprites (64x64)
+### Coordinates
+
+Atlas coordinates are top-left origin; Bevy 2D is y-up and centre-origin.
+`canvas_view.rs` holds the only conversion:
+
+```
+atlas_left = -rect_size.x / 2 - scroll_x
+atlas_top  =  rect_size.y / 2
+pixel (x, y) covers [atlas_left + x*scale, ...] x [atlas_top - (y+1)*scale, ...]
+```
+
+`canvas_render` draws with these and `track_hovered_pixel` inverts them, so
+drawing and hit testing cannot drift apart.
 
 ---
 
 ## Implementation Status
 
-### ✅ Phase 1: Core (MVP) - COMPLETED
-1. ✅ Bevy app scaffold with window setup
-2. ✅ Atlas data structure (1 tile, 8x8)
-3. ✅ Basic viewport rendering (pixels visible at 64x64)
-4. ✅ Color palette with default colors
-5. ✅ Click to draw (set pixel color)
-6. ✅ Active color selection
+### Working
+1. Open a document from a CLI argument (PNG + optional JSON sidecar)
+2. Save back to that path, or to `untitled` when none was given
+3. Palette sidebar built from the loaded palette; click to select
+4. Click and drag to paint pixels
+5. Add a tile on the right (`Space`)
+6. Scroll horizontally by whole tiles, clamped
+7. Tile boundaries and an optional pixel grid
+8. Status strip: file, unsaved marker, hovered pixel and tile, selected colour,
+   atlas size
+9. Scripted dev harness with self-capture and exit
 
-### ✅ Phase 2: Navigation - COMPLETED
-1. ✅ Scrolling with \u00F6 and # keys
-2. ✅ Viewport offset management
-3. ✅ Add tile functionality (Space key)
-4. ✅ Remove tile functionality (Backspace key)
-
-### ✅ Phase 4: Undo/Redo - COMPLETED
-1. ✅ History stack implementation
-2. ✅ Undo/redo actions (Ctrl+Z, Ctrl+Y)
-3. ✅ Integration with pixel drawing
-4. ✅ Integration with tile operations
-
-### ✅ Phase 7: Layout - COMPLETED
-1. ✅ Palette panel positioned on left side
-2. ✅ Viewport offset to avoid overlap with palette
-3. ✅ Swatches as children of panel entity
-4. ✅ Viewport clamping accounts for palette width
-5. ✅ Viewport y-axis clamping fixed to ensure atlas is fully visible
-
-### ⚠️ Phase 3: Palette Management - PARTIAL
-1. ❌ Add color UI
-2. ❌ Remove color UI
-3. ❌ Reorder colors (drag-and-drop)
-4. ✅ Palette logic implementation
-5. ✅ Palette persistence with atlas (code ready)
-
-### ⚠️ Phase 5: File I/O - PARTIAL
-1. ✅ Save atlas as PNG + JSON (code ready)
-2. ✅ Load atlas from PNG + JSON (code ready)
-3. ❌ File picker UI (Feathers)
-4. ✅ Save/Load keyboard shortcuts (Ctrl+S, Ctrl+O) - logs to console, needs file picker
-5. ⚠️ Default save/load directory utility (code ready in file_io.rs)
-
-### ✅ Phase 7: Status Bar - COMPLETED
-1. ✅ Status bar background display
-2. ⚠️ Status text (pending Feathers UI integration)
-
-### ⚠️ Phase 6: Polish - PARTIAL
-1. ✅ Visual feedback (active color border, hover states)
-2. ✅ Status bar background
-3. ✅ Error handling (basic implementation done)
-4. ❌ Grid overlay
-5. ❌ Zoom functionality
-
-### ⚠️ Phase 6: Polish - PARTIAL
-1. ✅ Visual feedback (active color border, hover states)
-2. ❌ Status bar
-3. ⚠️ Error handling (basic implementation done)
+### Not implemented
+1. Undo / redo — `history.rs` exists, tested, unwired
+2. Palette editing: add / remove / reorder colours
+3. Removing a tile (`AtlasDocument::remove_tile_from_right` exists, unbound)
+4. Multiple tile rows (`height_in_tiles` is always 1; the storage supports more)
+5. Zoom at runtime (`--scale` is startup only)
+6. A file picker; paths come from argv
+7. A checkerboard behind transparent pixels — they show the flat background, and
+   the transparent swatch reads as an empty slot in the sidebar
 
 ---
 
 ## Decisions Made
 
-✅ **Feathers version:** Using Bevy 0.19 with built-in `bevy_feathers` feature (currently using Bevy sprites for rendering)
-✅ **Coordinate system:** Top-left origin for atlas coordinates (more intuitive for image editing)
-✅ **Color representation:** Using `Srgba` variant with direct field access (red, green, blue, alpha)
-✅ **Rendering:** Using Bevy 0.19's `Sprite::from_color()` for pixel rendering
-✅ **Key bindings:**
-   - Scroll: O (ö) for left, #/Digit3 for right
-   - Undo/Redo: Ctrl+Z / Ctrl+Y
-   - Tiles: Space to add, Backspace to remove
-   - Drawing: Left click on viewport
-   - Color selection: Left click on palette
+- **Row-major pixel storage over the whole image.** Tile identity is a view
+  concern. Makes texture upload and PNG encode straight copies. The previous
+  per-tile-contiguous layout disagreed with the PNG encoder and corrupted any
+  atlas wider than one tile.
+- **All mutation flows through request messages.** Input never writes state, so
+  the dev harness exercises the production path.
+- **The canvas gets its own camera with a fitted viewport,** so canvas world
+  space does not depend on the sidebar width.
+- **One texture, not one sprite per pixel.**
+- **Feathers for the palette sidebar,** with theme tokens generated per loaded
+  palette colour rather than a hardcoded list.
+- **Scroll keys:** Arrow Left/Right *and* A/D.
+- **Coordinate system:** top-left origin for atlas coordinates.
+- **Colour representation:** `Srgba`, with `ColorData`/`PaletteData` mirrors for
+  serde.
 
 ---
 
-## Open Questions / Decisions
+## Open Questions
 
-- [ ] Should atlas support multiple rows (height > 1 tile) in v1? (Currently: yes, code supports it)
-- [ ] Should there be a "background" color separate from transparent? (Currently: transparent is a palette color)
-- [ ] How to handle palette color selection when drawing? (Currently: first color selected by default)
-- [ ] Should clicking a pixel with the active color do nothing, or toggle? (Currently: sets to that color regardless)
-- [ ] Key bindings for: add color to palette, remove color from palette, save, load
+- [ ] Should the atlas support multiple tile rows in the UI? (storage already does)
+- [ ] Runtime zoom, and should `--scale` then become a starting value only?
+- [ ] Where should undo/redo re-enter — a `history` resource fed by the same
+      request messages?
+- [ ] A checkerboard behind transparent pixels, and how to show the transparent
+      swatch as something other than an empty slot
 
 ---
 
@@ -286,17 +284,14 @@ bevy = { version = "0.19", features = ["2d", "bevy_ui", "bevy_feathers"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 image = "0.25"
+
+[dev-dependencies]
+tempfile = "3.10"
 ```
 
 ---
 
-*Last updated: 2026-07-19*
-*Recent fix: Complete rewrite of UI positioning system*
-  - Extracted position calculations into clear helper functions (panel_x, panel_y, atlas_start_x)
-  - Fixed palette panel: now properly sized to fit within screen with margin at bottom
-  - Fixed viewport scrolling: scroll_tile now moves by PIXEL_SCALE * tile_size screen pixels (512px per tile, not 8px)
-  - Fixed offset_x unit consistency: all calculations now use screen pixels
-  - Atlas starts exactly at palette right edge with no gap or overlap
-*Previous fix: Window positioning and viewport y-axis clamping*
+*Last updated: 2026-07-26*
+*Rebuilt around the light main workflow: seven plugins, one source of truth, and
+a scripted screenshot harness. See VALIDATION.md for how to check it.*
 *Project lead: jbieber*
-*Status: MVP functional - core editing features working*
