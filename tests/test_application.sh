@@ -1,74 +1,85 @@
 #!/bin/bash
+#
+# Automated checks: compile, unit tests, release build, and a real scripted run
+# that walks the whole editing workflow and captures screenshots.
+#
+# Usage: ./tests/test_application.sh [OUTPUT_DIR]
 
-# Test script for Bevy Sprite Atlas Editor
-# This script runs the application and validates basic functionality
+set -euo pipefail
 
-set -e
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+OUT="${1:-target/screenshots}"
+mkdir -p "$OUT" "$OUT/doc"
 
 echo "=========================================="
-echo "Bevy Sprite Atlas Editor Test Suite"
+echo "Bevy Sprite Atlas Editor — checks"
 echo "=========================================="
+
 echo
+echo "1. cargo check"
+cargo check --all-targets --quiet
+echo "   ok"
 
-# Step 1: Check compilation
-echo "Step 1: Checking compilation..."
-cd "$(dirname "$0")/.."
-cargo check --quiet 2>&1 | grep -q "Finished" && echo "✓ Compilation successful"
+echo
+echo "2. cargo test"
+cargo test --quiet
+echo "   ok"
 
-# Step 2: Run unit tests
-echo "Step 2: Running unit tests..."
-cargo test --quiet 2>&1 | grep -q "test result: ok" && echo "✓ All unit tests passed"
+echo
+echo "3. cargo build --release"
+cargo build --release --quiet
+echo "   ok"
 
-# Step 3: Build release binary
-echo "Step 3: Building release binary..."
-cargo build --release --quiet 2>&1 | grep -q "Finished" && echo "✓ Release build successful"
+echo
+echo "4. workflow run (paint, add tiles, save)"
+WORK="$OUT/doc/workflow"
+rm -f "$WORK.png" "$WORK.atlas.json"
+./tests/shot.sh "$OUT/01-painted.png" \
+    "select 3; paint 0,0; paint 1,1; paint 2,2; paint 7,7; tile+; select 5; paint 8,0; paint 15,7; save" \
+    -- "$WORK"
 
-# Step 4: Check binary exists
-echo "Step 4: Checking binary..."
-if [ -f "target/release/bevy_sprite_editor" ]; then
-    echo "✓ Binary exists"
+for f in "$WORK.png" "$WORK.atlas.json"; do
+    if [ -s "$f" ]; then
+        echo "   wrote $f"
+    else
+        echo "   FAIL: $f was not written" >&2
+        exit 1
+    fi
+done
+
+# The sidecar must agree with what the script built: 2 tiles wide.
+if grep -q '"width_in_tiles": 2' "$WORK.atlas.json"; then
+    echo "   sidecar reports 2 tiles"
 else
-    echo "✗ Binary not found"
+    echo "   FAIL: sidecar does not report 2 tiles" >&2
+    cat "$WORK.atlas.json" >&2
     exit 1
 fi
 
-# Step 5: Run application briefly to check it starts
-echo "Step 5: Testing application startup..."
-timeout 2 ./target/release/bevy_sprite_editor > /tmp/bevy_test_output.log 2>&1 || true
-if grep -q "Bevy Sprite Atlas Editor" /tmp/bevy_test_output.log || [ $? -eq 124 ]; then
-    echo "✓ Application starts successfully"
-else
-    echo "✗ Application failed to start"
-    cat /tmp/bevy_test_output.log
-    exit 1
-fi
+echo
+echo "5. reopen the saved file, widen it, and scroll"
+# Green goes at x=24,25 — the first column of tile 3 — so after scrolling 3
+# tiles it lands exactly at the canvas's left edge. That is what makes the
+# screenshot prove the scroll offset is exact and not merely nonzero.
+./tests/shot.sh "$OUT/02-scrolled.png" \
+    "tile+6; select 4; paint 24,0; paint 25,1; paint 26,2; paint 63,7; scroll+3" \
+    -- "$WORK.png"
 
 echo
 echo "=========================================="
-echo "All automated tests passed!"
+echo "All checks passed"
 echo "=========================================="
 echo
-echo "For visual validation, run:"
-echo "  ./tests/capture_window.sh"
+echo "Screenshots in $OUT:"
+ls -1 "$OUT"/*.png
 echo
-echo "This will:"
-echo "  1. Build the application"
-echo "  2. Run it in a window"
-echo "  3. Capture a screenshot"
-echo "  4. Save to target/screenshots/"
+echo "Look for:"
+echo "  01-painted.png  — red marks in tile 0, blue in tile 1, orange tile"
+echo "                    boundaries, no '*' in the status strip (it saved)"
+echo "  02-scrolled.png — 8 tiles wide, scrolled 3 tiles right. The green"
+echo "                    diagonal painted at x=24 starts exactly at the left"
+echo "                    edge, and tiles 0-2 (the red/blue marks) have"
+echo "                    scrolled off."
 echo
-echo "Requirements for capture_window.sh:"
-echo "  - xdotool (window control)"
-echo "  - ImageMagick (screenshot capture)"
-echo
-echo "Install on Ubuntu/Debian:"
-echo "  sudo apt-get install xdotool imagemagick"
-echo
-echo "To manually test the application, run:"
-echo "  ./target/release/bevy_sprite_editor"
-echo
-echo "Expected visual elements:"
-echo "  - Color palette on LEFT side (17 color swatches)"
-echo "  - 8x8 grid of pixels on RIGHT side (512x512)"
-echo "  - Dark gray status bar at BOTTOM"
-echo "  - No gap between palette and viewport"
+echo "To drive it by hand:  cargo run -- $WORK.png"
