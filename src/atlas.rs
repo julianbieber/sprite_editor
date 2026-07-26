@@ -1,300 +1,254 @@
-//! Atlas data structure for sprite atlas editor
+//! The atlas document: the pixel grid being edited.
 //!
-//! An atlas is a grid of square tiles, each containing tile_size x tile_size pixels.
-//! The atlas stores all pixel data in a flat array for efficient access.
+//! Pixels are stored **row-major over the whole atlas image**, so pixel
+//! `(x, y)` lives at index `y * width_in_pixels + x`. Tiles are a *view*
+//! concept only — they are where the grid lines go, and nothing more. That
+//! makes the texture upload and the PNG encode straight copies.
+//!
+//! (The previous layout was per-tile-contiguous while the PNG encoder assumed
+//! row-major, so saving anything wider than one tile scrambled it.)
 
 use bevy::prelude::*;
-use std::path::Path;
 
-use crate::config::{self, transparent, DEFAULT_TILE_SIZE, INITIAL_ATLAS_HEIGHT, INITIAL_ATLAS_WIDTH};
+use crate::config::{transparent, DEFAULT_TILE_SIZE};
 
 // ============================================================================
 // DATA STRUCTURES
 // ============================================================================
 
-/// A sprite atlas containing multiple square tiles
-#[derive(Debug, Clone)]
-pub struct Atlas {
-    /// Number of pixels per side of each square tile
+/// The document being edited. The single source of truth for pixel data.
+#[derive(Debug, Clone, Resource)]
+pub struct AtlasDocument {
+    /// Pixels per side of a tile.
     pub tile_size: u32,
-    /// Number of tiles wide
+    /// Tiles across.
     pub width_in_tiles: u32,
-    /// Number of tiles tall
+    /// Tiles down. Always 1 in this version.
     pub height_in_tiles: u32,
-    /// Flat array of pixel colors, stored in row-major order
-    /// Layout: [tile(0,0) row 0, tile(0,0) row 1..., tile(1,0) row 0...]
+    /// Row-major over the whole image: `(x, y)` is at `y * W + x`.
     pub pixels: Vec<Srgba>,
+    /// Bumped on every accepted mutation; the renderer compares against it.
+    pub revision: u64,
+    /// Set on edit, cleared on save/load.
+    pub unsaved: bool,
 }
 
-impl Atlas {
-    // --------------------------------------------------------------------------
-    // Constructors
-    // --------------------------------------------------------------------------
+impl Default for AtlasDocument {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    /// Create a new atlas with default settings (8x8 tiles, 1x1 tiles)
+impl AtlasDocument {
+    // ------------------------------------------------------------------------
+    // Constructors
+    // ------------------------------------------------------------------------
+
     pub fn new() -> Self {
         Self::with_tile_size(DEFAULT_TILE_SIZE)
     }
 
-    /// Create a new atlas with a specific tile size
+    /// One transparent tile at the given tile size.
     pub fn with_tile_size(tile_size: u32) -> Self {
-        Self::with_dimensions(tile_size, INITIAL_ATLAS_WIDTH, INITIAL_ATLAS_HEIGHT)
+        Self::with_dimensions(tile_size, 1, 1)
     }
 
-    /// Create a new atlas with specific dimensions
     pub fn with_dimensions(tile_size: u32, width_in_tiles: u32, height_in_tiles: u32) -> Self {
-        let total_pixels = tile_size * tile_size * width_in_tiles * height_in_tiles;
-        let pixels = vec![transparent(); total_pixels as usize];
+        let tile_size = tile_size.max(1);
+        let width_in_tiles = width_in_tiles.max(1);
+        let height_in_tiles = height_in_tiles.max(1);
+        let total = (tile_size * tile_size * width_in_tiles * height_in_tiles) as usize;
 
-        Atlas {
+        Self {
+            tile_size,
+            width_in_tiles,
+            height_in_tiles,
+            pixels: vec![transparent(); total],
+            revision: 0,
+            unsaved: false,
+        }
+    }
+
+    /// Build from decoded image data. `pixels` must be row-major and match the
+    /// stated dimensions exactly.
+    pub fn from_pixels(
+        tile_size: u32,
+        width_in_tiles: u32,
+        height_in_tiles: u32,
+        pixels: Vec<Srgba>,
+    ) -> Result<Self, String> {
+        let expected = (tile_size * tile_size * width_in_tiles * height_in_tiles) as usize;
+        if pixels.len() != expected {
+            return Err(format!(
+                "pixel count {} does not match {}x{} tiles of {}px ({} expected)",
+                pixels.len(),
+                width_in_tiles,
+                height_in_tiles,
+                tile_size,
+                expected
+            ));
+        }
+
+        Ok(Self {
             tile_size,
             width_in_tiles,
             height_in_tiles,
             pixels,
-        }
+            revision: 0,
+            unsaved: false,
+        })
     }
 
-    // --------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
     // Accessors
-    // --------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
-    /// Get the total width of the atlas in pixels
+    #[inline]
     pub fn width_in_pixels(&self) -> u32 {
         self.width_in_tiles * self.tile_size
     }
 
-    /// Get the total height of the atlas in pixels
+    #[inline]
     pub fn height_in_pixels(&self) -> u32 {
         self.height_in_tiles * self.tile_size
     }
 
-    /// Get the total number of pixels in the atlas
-    pub fn pixel_count(&self) -> usize {
-        self.pixels.len()
-    }
-
-    /// Get the total number of tiles in the atlas
-    pub fn tile_count(&self) -> usize {
-        (self.width_in_tiles * self.height_in_tiles) as usize
-    }
-
-    // --------------------------------------------------------------------------
-    // Pixel Access
-    // --------------------------------------------------------------------------
-
-    /// Calculate the flat index of a pixel in the pixels array
     #[inline]
-    pub fn pixel_index(&self, tile_x: u32, tile_y: u32, pixel_x: u32, pixel_y: u32) -> usize {
-        let tiles_per_row = self.width_in_tiles;
-        let pixels_per_tile = self.tile_size;
-        
-        let tile_row = tile_y * tiles_per_row + tile_x;
-        let pixel_row = tile_row * pixels_per_tile + pixel_y;
-        let pixel_col = pixel_row * pixels_per_tile + pixel_x;
-        
-        pixel_col as usize
+    pub fn contains(&self, x: u32, y: u32) -> bool {
+        x < self.width_in_pixels() && y < self.height_in_pixels()
     }
 
-    /// Get the color of a specific pixel
+    /// Flat index of `(x, y)`. Callers must have checked [`Self::contains`].
     #[inline]
-    pub fn get_pixel(&self, tile_x: u32, tile_y: u32, pixel_x: u32, pixel_y: u32) -> Srgba {
-        let index = self.pixel_index(tile_x, tile_y, pixel_x, pixel_y);
-        self.pixels[index]
+    pub fn index(&self, x: u32, y: u32) -> usize {
+        (y * self.width_in_pixels() + x) as usize
     }
 
-    /// Get the color of a specific pixel by atlas coordinates
+    /// Which tile column `x` falls in — the status strip reports it.
+    #[inline]
+    pub fn tile_of(&self, x: u32) -> u32 {
+        x / self.tile_size
+    }
+
+    // ------------------------------------------------------------------------
+    // Pixel access
+    // ------------------------------------------------------------------------
+
+    /// Only the tests and `history` read pixels back today.
+    #[allow(dead_code)]
     #[inline]
     pub fn get_pixel_at(&self, x: u32, y: u32) -> Srgba {
-        let (tile_x, tile_y) = config::pixel_to_tile(x, y, self.tile_size);
-        let (pixel_x, pixel_y) = (x % self.tile_size, y % self.tile_size);
-        self.get_pixel(tile_x, tile_y, pixel_x, pixel_y)
+        if !self.contains(x, y) {
+            return transparent();
+        }
+        self.pixels[self.index(x, y)]
     }
 
-    /// Set the color of a specific pixel
-    #[inline]
-    pub fn set_pixel(&mut self, tile_x: u32, tile_y: u32, pixel_x: u32, pixel_y: u32, color: Srgba) {
-        let index = self.pixel_index(tile_x, tile_y, pixel_x, pixel_y);
+    /// Writes a pixel. Returns whether anything actually changed, so callers can
+    /// avoid bumping the revision for a no-op paint.
+    pub fn set_pixel_at(&mut self, x: u32, y: u32, color: Srgba) -> bool {
+        if !self.contains(x, y) {
+            return false;
+        }
+        let index = self.index(x, y);
+        if self.pixels[index] == color {
+            return false;
+        }
         self.pixels[index] = color;
+        true
     }
 
-    /// Set the color of a specific pixel by atlas coordinates
-    #[inline]
-    pub fn set_pixel_at(&mut self, x: u32, y: u32, color: Srgba) {
-        let (tile_x, tile_y) = config::pixel_to_tile(x, y, self.tile_size);
-        let (pixel_x, pixel_y) = (x % self.tile_size, y % self.tile_size);
-        self.set_pixel(tile_x, tile_y, pixel_x, pixel_y, color);
+    /// Marks the document changed. Every accepted mutation goes through here.
+    pub fn touch(&mut self) {
+        self.revision += 1;
+        self.unsaved = true;
     }
 
-    // --------------------------------------------------------------------------
-    // Tile Management
-    // --------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // Tile management
+    // ------------------------------------------------------------------------
 
-    /// Add a new transparent tile to the right of the atlas
+    /// Appends one transparent tile column on the right.
+    ///
+    /// Row-major storage means this is a splice per row, not an append — the new
+    /// pixels have to be interleaved so every row stays contiguous. Rows are
+    /// walked back to front so earlier insertion points stay valid.
     pub fn add_tile_to_right(&mut self) {
-        let new_tile_pixels = self.tile_size * self.tile_size;
-        
-        self.pixels.extend(std::iter::repeat(transparent())
-            .take(new_tile_pixels as usize));
-        
+        let old_width = self.width_in_pixels() as usize;
+        let height = self.height_in_pixels() as usize;
+        let tile_size = self.tile_size as usize;
+
+        for row in (0..height).rev() {
+            let end_of_row = row * old_width + old_width;
+            self.pixels.splice(
+                end_of_row..end_of_row,
+                std::iter::repeat(transparent()).take(tile_size),
+            );
+        }
+
         self.width_in_tiles += 1;
     }
 
-    /// Add a new transparent tile below the atlas
-    pub fn add_tile_below(&mut self) {
-        let new_tile_pixels = self.tile_size * self.tile_size * self.width_in_tiles;
-        
-        self.pixels.extend(std::iter::repeat(transparent())
-            .take(new_tile_pixels as usize));
-        
-        self.height_in_tiles += 1;
-    }
-
-    /// Remove a tile from the right edge
-    /// Returns the pixels of the removed tile, or None if atlas is already 1 tile wide
+    /// Removes the rightmost tile column, returning its pixels row-major.
+    /// Refuses to remove the last column.
+    ///
+    /// No key is bound to this yet — it exists for `history` and the scroll
+    /// re-clamp test.
+    #[allow(dead_code)]
     pub fn remove_tile_from_right(&mut self) -> Option<Vec<Srgba>> {
         if self.width_in_tiles <= 1 {
             return None;
         }
 
-        let pixels_per_tile = (self.tile_size * self.tile_size) as usize;
-        let start_index = self.pixels.len() - pixels_per_tile;
-        let removed_pixels = self.pixels.splice(start_index.., []).collect();
-        
-        self.width_in_tiles -= 1;
-        
-        Some(removed_pixels)
-    }
-
-    // --------------------------------------------------------------------------
-    // Validation
-    // --------------------------------------------------------------------------
-
-    /// Check if coordinates are within bounds
-    pub fn is_valid_pixel(&self, tile_x: u32, tile_y: u32, pixel_x: u32, pixel_y: u32) -> bool {
-        tile_x < self.width_in_tiles
-        && tile_y < self.height_in_tiles
-        && pixel_x < self.tile_size
-        && pixel_y < self.tile_size
-    }
-
-    /// Check if atlas pixel coordinates are within bounds
-    pub fn is_valid_atlas_pixel(&self, x: u32, y: u32) -> bool {
-        x < self.width_in_pixels() && y < self.height_in_pixels()
-    }
-
-    // --------------------------------------------------------------------------
-    // Conversion
-    // --------------------------------------------------------------------------
-
-    /// Convert to a Bevy Image for rendering or saving
-    pub fn to_image(&self) -> Image {
-        use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-        use bevy::asset::RenderAssetUsages;
-        
-        let width = self.width_in_pixels() as usize;
+        let old_width = self.width_in_pixels() as usize;
         let height = self.height_in_pixels() as usize;
-        
-        // Convert Srgba to RGBA8 u8
-        let mut data = Vec::with_capacity(width * height * 4);
-        
+        let tile_size = self.tile_size as usize;
+
+        let mut rows: Vec<Vec<Srgba>> = Vec::with_capacity(height);
+        for row in (0..height).rev() {
+            let end_of_row = row * old_width + old_width;
+            let removed: Vec<Srgba> = self
+                .pixels
+                .splice(end_of_row - tile_size..end_of_row, [])
+                .collect();
+            rows.push(removed);
+        }
+        rows.reverse();
+
+        self.width_in_tiles -= 1;
+        Some(rows.into_iter().flatten().collect())
+    }
+
+    // ------------------------------------------------------------------------
+    // Conversion
+    // ------------------------------------------------------------------------
+
+    /// RGBA8 bytes, row-major — ready for both the GPU texture and the PNG
+    /// encoder, with no reordering in either direction.
+    pub fn to_rgba8(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(self.pixels.len() * 4);
         for pixel in &self.pixels {
-            data.push((pixel.red * 255.0) as u8);
-            data.push((pixel.green * 255.0) as u8);
-            data.push((pixel.blue * 255.0) as u8);
-            data.push((pixel.alpha * 255.0) as u8);
+            let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+            data.push(to_u8(pixel.red));
+            data.push(to_u8(pixel.green));
+            data.push(to_u8(pixel.blue));
+            data.push(to_u8(pixel.alpha));
         }
-        
-        Image::new_fill(
-            Extent3d {
-                width: width as u32,
-                height: height as u32,
-                depth_or_array_layers: 1,
-            },
-            TextureDimension::D2,
-            &data,
-            TextureFormat::Rgba8UnormSrgb,
-            RenderAssetUsages::default(),
-        )
+        data
     }
 
-    // --------------------------------------------------------------------------
-    // Serialization Support
-    // --------------------------------------------------------------------------
-
-    /// Save the atlas pixels to a PNG file
-    pub fn save_to_png(&self, path: &Path) -> Result<(), image::ImageError> {
-        use image::{ImageBuffer, Rgba};
-        
-        let width = self.width_in_pixels() as u32;
-        let height = self.height_in_pixels() as u32;
-        
-        // Create an image buffer
-        let mut img = ImageBuffer::new(width, height);
-        
-        // Fill with pixel data
-        for (i, pixel) in self.pixels.iter().enumerate() {
-            let x = (i as u32) % width;
-            let y = (i as u32) / width;
-            
-            let r = (pixel.red * 255.0) as u8;
-            let g = (pixel.green * 255.0) as u8;
-            let b = (pixel.blue * 255.0) as u8;
-            let a = (pixel.alpha * 255.0) as u8;
-            
-            img.put_pixel(x, y, Rgba([r, g, b, a]));
-        }
-        
-        // Save to file
-        img.save(path)?;
-        
-        Ok(())
-    }
-
-    /// Load an atlas from a PNG file
-    pub fn load_from_png(path: &Path, tile_size: u32) -> Result<Self, image::ImageError> {
-        use image::ImageReader;
-        
-        // Load the image
-        let img = ImageReader::open(path)?.decode()?;
-        let rgba_img = img.to_rgba8();
-        
-        let width = rgba_img.width();
-        let height = rgba_img.height();
-        
-        // Calculate dimensions in tiles
-        let width_in_tiles = (width + tile_size - 1) / tile_size;
-        let height_in_tiles = (height + tile_size - 1) / tile_size;
-        
-        // Create atlas
-        let total_pixels = width_in_tiles * height_in_tiles * tile_size * tile_size;
-        let mut pixels = Vec::with_capacity(total_pixels as usize);
-        
-        // Convert RGBA8 to Srgba
-        for y in 0..height {
-            for x in 0..width {
-                let pixel = rgba_img.get_pixel(x, y);
-                pixels.push(Srgba::new(
-                    pixel[0] as f32 / 255.0,
-                    pixel[1] as f32 / 255.0,
-                    pixel[2] as f32 / 255.0,
-                    pixel[3] as f32 / 255.0,
-                ));
-            }
-        }
-        
-        // If image doesn't align with tile grid, pad with transparent
-        let expected_pixels = (width_in_tiles * height_in_tiles * tile_size * tile_size) as usize;
-        if pixels.len() < expected_pixels {
-            pixels.extend(std::iter::repeat(transparent())
-                .take(expected_pixels - pixels.len()));
-        }
-        
-        Ok(Atlas {
-            tile_size,
-            width_in_tiles,
-            height_in_tiles,
-            pixels,
-        })
+    /// Inverse of [`Self::to_rgba8`].
+    pub fn pixels_from_rgba8(data: &[u8]) -> Vec<Srgba> {
+        data.chunks_exact(4)
+            .map(|px| {
+                Srgba::new(
+                    px[0] as f32 / 255.0,
+                    px[1] as f32 / 255.0,
+                    px[2] as f32 / 255.0,
+                    px[3] as f32 / 255.0,
+                )
+            })
+            .collect()
     }
 }
 
@@ -305,61 +259,161 @@ impl Atlas {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::color::palettes::css::RED;
+
+    const RED: Srgba = Srgba::new(1.0, 0.0, 0.0, 1.0);
+    const BLUE: Srgba = Srgba::new(0.0, 0.0, 1.0, 1.0);
 
     #[test]
-    fn test_new_atlas() {
-        let atlas = Atlas::new();
-        assert_eq!(atlas.tile_size, 8);
-        assert_eq!(atlas.width_in_tiles, 1);
-        assert_eq!(atlas.height_in_tiles, 1);
-        assert_eq!(atlas.pixels.len(), 64); // 8x8
+    fn new_document_is_one_transparent_tile() {
+        let doc = AtlasDocument::new();
+        assert_eq!(doc.tile_size, 8);
+        assert_eq!(doc.width_in_tiles, 1);
+        assert_eq!(doc.pixels.len(), 64);
+        assert!(doc.pixels.iter().all(|p| *p == transparent()));
+        assert!(!doc.unsaved);
     }
 
     #[test]
-    fn test_custom_tile_size() {
-        let atlas = Atlas::with_tile_size(16);
-        assert_eq!(atlas.tile_size, 16);
-        assert_eq!(atlas.pixels.len(), 256); // 16x16
+    fn index_is_row_major_over_the_whole_image() {
+        let doc = AtlasDocument::with_dimensions(8, 3, 1);
+        assert_eq!(doc.width_in_pixels(), 24);
+        assert_eq!(doc.index(0, 0), 0);
+        assert_eq!(doc.index(23, 0), 23);
+        // Second row starts one full image row in, not one tile in.
+        assert_eq!(doc.index(0, 1), 24);
+        // A pixel in the third tile, second row.
+        assert_eq!(doc.index(16, 1), 40);
     }
 
     #[test]
-    fn test_pixel_index() {
-        let atlas = Atlas::with_tile_size(8);
-        
-        assert_eq!(atlas.pixel_index(0, 0, 0, 0), 0);
-        assert_eq!(atlas.pixel_index(0, 0, 7, 7), 63);
-        
-        let mut atlas = Atlas::with_tile_size(8);
-        atlas.add_tile_to_right();
-        
-        assert_eq!(atlas.pixel_index(1, 0, 0, 0), 64);
+    fn set_pixel_reports_whether_it_changed() {
+        let mut doc = AtlasDocument::new();
+        assert!(doc.set_pixel_at(2, 3, RED));
+        assert_eq!(doc.get_pixel_at(2, 3), RED);
+        // Repainting the same colour is a no-op the caller can skip.
+        assert!(!doc.set_pixel_at(2, 3, RED));
+        // Out of bounds never writes.
+        assert!(!doc.set_pixel_at(99, 99, BLUE));
     }
 
     #[test]
-    fn test_set_get_pixel() {
-        let mut atlas = Atlas::new();
-        let red = RED;
-        
-        atlas.set_pixel(0, 0, 0, 0, red);
-        assert_eq!(atlas.get_pixel(0, 0, 0, 0), red);
+    fn out_of_bounds_reads_are_transparent_not_panics() {
+        let doc = AtlasDocument::new();
+        assert_eq!(doc.get_pixel_at(8, 0), transparent());
+        assert_eq!(doc.get_pixel_at(0, 8), transparent());
+    }
+
+    /// The layout's whole reason for existing: growing the atlas must not move
+    /// any pixel that is already there.
+    #[test]
+    fn add_tile_preserves_existing_pixel_positions() {
+        let mut doc = AtlasDocument::with_tile_size(4);
+        // Mark a recognisable pattern across the full first tile.
+        for y in 0..4 {
+            for x in 0..4 {
+                let shade = (y * 4 + x) as f32 / 16.0;
+                doc.set_pixel_at(x, y, Srgba::new(shade, 0.0, 0.0, 1.0));
+            }
+        }
+        let before: Vec<Srgba> = (0..4)
+            .flat_map(|y| (0..4).map(move |x| (x, y)))
+            .map(|(x, y)| doc.get_pixel_at(x, y))
+            .collect();
+
+        doc.add_tile_to_right();
+
+        assert_eq!(doc.width_in_tiles, 2);
+        assert_eq!(doc.width_in_pixels(), 8);
+        assert_eq!(doc.pixels.len(), 32);
+
+        let after: Vec<Srgba> = (0..4)
+            .flat_map(|y| (0..4).map(move |x| (x, y)))
+            .map(|(x, y)| doc.get_pixel_at(x, y))
+            .collect();
+        assert_eq!(before, after, "existing pixels moved when the atlas grew");
+
+        // And the new column is transparent.
+        for y in 0..4 {
+            for x in 4..8 {
+                assert_eq!(doc.get_pixel_at(x, y), transparent());
+            }
+        }
     }
 
     #[test]
-    fn test_add_tile() {
-        let mut atlas = Atlas::new();
-        assert_eq!(atlas.width_in_tiles, 1);
-        assert_eq!(atlas.pixels.len(), 64);
-        
-        atlas.add_tile_to_right();
-        assert_eq!(atlas.width_in_tiles, 2);
-        assert_eq!(atlas.pixels.len(), 128); // 2 tiles * 64 pixels
+    fn add_then_remove_tile_round_trips() {
+        let mut doc = AtlasDocument::with_tile_size(4);
+        doc.set_pixel_at(1, 1, RED);
+        let before = doc.pixels.clone();
+
+        doc.add_tile_to_right();
+        let removed = doc.remove_tile_from_right();
+
+        assert!(removed.is_some());
+        assert_eq!(doc.width_in_tiles, 1);
+        assert_eq!(doc.pixels, before);
     }
 
     #[test]
-    fn test_width_height_pixels() {
-        let atlas = Atlas::with_dimensions(8, 3, 2);
-        assert_eq!(atlas.width_in_pixels(), 24);  // 3 tiles * 8
-        assert_eq!(atlas.height_in_pixels(), 16); // 2 tiles * 8
+    fn remove_tile_returns_that_tiles_pixels_row_major() {
+        let mut doc = AtlasDocument::with_tile_size(2);
+        doc.add_tile_to_right();
+        // Fill the right-hand tile with distinguishable values.
+        doc.set_pixel_at(2, 0, RED);
+        doc.set_pixel_at(3, 0, BLUE);
+        doc.set_pixel_at(2, 1, BLUE);
+        doc.set_pixel_at(3, 1, RED);
+
+        let removed = doc.remove_tile_from_right().expect("two tiles wide");
+        assert_eq!(removed, vec![RED, BLUE, BLUE, RED]);
+        assert_eq!(doc.width_in_tiles, 1);
+    }
+
+    #[test]
+    fn the_last_tile_cannot_be_removed() {
+        let mut doc = AtlasDocument::new();
+        assert!(doc.remove_tile_from_right().is_none());
+        assert_eq!(doc.width_in_tiles, 1);
+    }
+
+    #[test]
+    fn rgba8_round_trips_and_keeps_row_order() {
+        let mut doc = AtlasDocument::with_tile_size(2);
+        doc.add_tile_to_right();
+        doc.set_pixel_at(0, 0, RED);
+        doc.set_pixel_at(3, 1, BLUE);
+
+        let bytes = doc.to_rgba8();
+        assert_eq!(bytes.len() as u32, doc.width_in_pixels() * doc.height_in_pixels() * 4);
+        // First pixel is red, and it is the first four bytes.
+        assert_eq!(&bytes[0..4], &[255, 0, 0, 255]);
+
+        let restored = AtlasDocument::pixels_from_rgba8(&bytes);
+        assert_eq!(restored, doc.pixels);
+    }
+
+    #[test]
+    fn from_pixels_rejects_a_mismatched_count() {
+        assert!(AtlasDocument::from_pixels(8, 2, 1, vec![transparent(); 128]).is_ok());
+        assert!(AtlasDocument::from_pixels(8, 2, 1, vec![transparent(); 100]).is_err());
+    }
+
+    #[test]
+    fn touch_bumps_revision_and_marks_unsaved() {
+        let mut doc = AtlasDocument::new();
+        assert_eq!(doc.revision, 0);
+        doc.touch();
+        assert_eq!(doc.revision, 1);
+        assert!(doc.unsaved);
+    }
+
+    #[test]
+    fn tile_of_reports_the_column() {
+        let mut doc = AtlasDocument::with_tile_size(8);
+        doc.add_tile_to_right();
+        assert_eq!(doc.tile_of(0), 0);
+        assert_eq!(doc.tile_of(7), 0);
+        assert_eq!(doc.tile_of(8), 1);
+        assert_eq!(doc.tile_of(15), 1);
     }
 }

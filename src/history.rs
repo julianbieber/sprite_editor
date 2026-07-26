@@ -5,7 +5,7 @@
 use bevy::prelude::*;
 use std::collections::VecDeque;
 
-use crate::atlas::Atlas;
+use crate::atlas::AtlasDocument;
 use crate::palette::Palette;
 use crate::config::HISTORY_MAX_DEPTH;
 
@@ -213,7 +213,7 @@ impl History {
 
     /// Undo the most recent action
     /// Returns the action that was undone, or None if nothing to undo
-    pub fn undo(&mut self, atlas: &mut Atlas, palette: &mut Palette) -> Option<Action> {
+    pub fn undo(&mut self, atlas: &mut AtlasDocument, palette: &mut Palette) -> Option<Action> {
         if self.undo_stack.is_empty() {
             return None;
         }
@@ -231,7 +231,7 @@ impl History {
 
     /// Redo the most recently undone action
     /// Returns the action that was redone, or None if nothing to redo
-    pub fn redo(&mut self, atlas: &mut Atlas, palette: &mut Palette) -> Option<Action> {
+    pub fn redo(&mut self, atlas: &mut AtlasDocument, palette: &mut Palette) -> Option<Action> {
         if self.redo_stack.is_empty() {
             return None;
         }
@@ -252,7 +252,7 @@ impl History {
     // --------------------------------------------------------------------------
 
     /// Apply an action to the editor state
-    pub fn apply_action(&mut self, atlas: &mut Atlas, palette: &mut Palette, action: &Action) {
+    pub fn apply_action(&mut self, atlas: &mut AtlasDocument, palette: &mut Palette, action: &Action) {
         match action {
             Action::SetPixel {
                 x,
@@ -321,7 +321,7 @@ impl History {
 /// Record a pixel set action
 pub fn record_set_pixel(
     history: &mut History,
-    atlas: &mut Atlas,
+    atlas: &mut AtlasDocument,
     x: u32,
     y: u32,
     new_color: Srgba,
@@ -337,13 +337,13 @@ pub fn record_set_pixel(
 }
 
 /// Record a tile addition action
-pub fn record_add_tile(history: &mut History, atlas: &mut Atlas) {
+pub fn record_add_tile(history: &mut History, atlas: &mut AtlasDocument) {
     atlas.add_tile_to_right();
     history.record(Action::AddTile);
 }
 
 /// Record a tile removal action
-pub fn record_remove_tile(history: &mut History, atlas: &mut Atlas) {
+pub fn record_remove_tile(history: &mut History, atlas: &mut AtlasDocument) {
     if let Some(pixels) = atlas.remove_tile_from_right() {
         history.record(Action::RemoveTile { pixels });
     }
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn test_record_and_undo_set_pixel() {
         let mut history = History::new();
-        let mut atlas = Atlas::new();
+        let mut atlas = AtlasDocument::new();
         let mut palette = Palette::new();
 
         let red = Srgba::RED;
@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn test_undo_then_redo() {
         let mut history = History::new();
-        let mut atlas = Atlas::new();
+        let mut atlas = AtlasDocument::new();
         let mut palette = Palette::new();
 
         let red = Srgba::RED;
@@ -448,7 +448,7 @@ mod tests {
     #[test]
     fn test_new_action_clears_redo() {
         let mut history = History::new();
-        let mut atlas = Atlas::new();
+        let mut atlas = AtlasDocument::new();
         let mut palette = Palette::new();
 
         let red = Srgba::RED;
@@ -465,8 +465,7 @@ mod tests {
     #[test]
     fn test_max_depth() {
         let mut history = History::with_max_depth(3);
-        let mut atlas = Atlas::new();
-        let mut palette = Palette::new();
+        let mut atlas = AtlasDocument::new();
 
         for i in 0..5 {
             record_set_pixel(&mut history, &mut atlas, i as u32, 0, Srgba::RED);
