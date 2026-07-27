@@ -40,6 +40,10 @@ Per-plugin design specs (Mental Model Language) live in the notes repo, not here
 - **Storage:** Palette saved with the atlas, in the JSON sidecar
 - **Entry 0 is fully transparent,** so erasing needs no separate tool
 - **Initial draw colour:** the first opaque entry (black)
+- **Two ways to specify it,** switched by the button at the top of the sidebar
+  (or `M`). There is still only one `Palette`; the button chooses what fills it.
+
+#### `list` — the hand-edited palette
 - **Editing:** four Feathers colour sliders under the swatches (R, G, B, A) set
   the *selected* entry; `<` and `>` move it one slot, `+` appends an opaque white
   entry and selects it, `-` drops the selected one. The last colour cannot be
@@ -48,6 +52,27 @@ Per-plugin design specs (Mental Model Language) live in the notes repo, not here
 - **Reordering does not repaint anything.** Pixels store colours, not palette
   indices, so a move changes the sidecar's order and nothing else.
 - **Not yet implemented:** reordering by dragging a swatch
+
+#### `oklab` — generated ramps
+- **A ramp** fixes two of Oklab's three values and sweeps the third over a range
+  in a fixed number of steps (2–24). Six numbers instead of a list.
+- **Several are live at once,** three by default: a warm and a cool lightness
+  ramp to shade with, and one hue sweep. Each gets its own row of swatches.
+- **The edited ramp is the one the selected swatch came from,** so clicking a
+  swatch in another ramp moves the editor to it. `L`/`a`/`b` choose which value
+  sweeps (and reset the range into the new units), `+` duplicates the edited ramp
+  and selects it, `-` drops it. The last ramp cannot be removed.
+- **The palette is derived,** rewritten from the ramps on every change, so the
+  `list` editors are refused here — an edit would be overwritten by the next
+  regenerate. The hand-edited palette is parked whole and comes back with its
+  selection intact when the mode is switched off.
+- **Out-of-gamut colours lose chroma, not hue.** Oklab is wider than sRGB, and
+  clipping each channel would collapse the far end of a chroma sweep onto one
+  corner colour; the chroma is pulled toward neutral until the colour fits.
+- **The ramps go in the sidecar,** so a document reopens in the mode it was
+  saved in, on the same ramp, with the same sweep in the sliders. The colours
+  they produced are written too, and the hand-edited palette is written parked
+  behind them — nothing is lost either way round.
 
 ### Drawing
 - **Granularity:** Pixel-by-pixel
@@ -63,7 +88,15 @@ Per-plugin design specs (Mental Model Language) live in the notes repo, not here
 - **Format:** PNG + JSON (separate files), format version `1.0`
 - **PNG:** the atlas image, same dimensions and pixel order as the document
 - **JSON** (`<base>.atlas.json`): version, tile size, atlas dimensions in tiles,
-  and the palette
+  the palette that was being drawn with, and a `generated` block holding the
+  Oklab ramps plus — when they were in charge — the hand-edited palette they
+  displaced. `generated` is optional and the version stays `1.0`: the field is
+  purely additive, so files written before it still load and builds that predate
+  it still read files that have it.
+- **The ramps are the specification.** On load the generated palette is rebuilt
+  from them rather than read back out of the stored colours, so hand-editing the
+  JSON's ramps works. Values outside the editor's own limits are clamped on the
+  way in, and a file with no ramps falls back to the built-in ones.
 - **Opening:** the first positional CLI argument. `demo`, `demo.png` and
   `demo.atlas.json` all name the same document.
 - **A missing sidecar is fine** — the PNG loads with the `--tile-size` fallback
@@ -76,18 +109,25 @@ Per-plugin design specs (Mental Model Language) live in the notes repo, not here
 
 ```
 +------------------+----------------------------------------------+
+|  [palette: list] |                                              |
+|                  |   Atlas canvas                               |
+|  Palette         |   (own camera + viewport, scrolls            |
+|  swatches        |    horizontally, tile boundaries drawn)       |
+|  (Feathers,      |                                              |
+|   one wrapping   |                                              |
+|   row per ramp)  |                                              |
 |                  |                                              |
-|  Palette         |   Atlas canvas                               |
-|  swatches        |   (own camera + viewport, scrolls            |
-|  (Feathers,      |    horizontally, tile boundaries drawn)       |
-|   wrapping)      |                                              |
-|                  |                                              |
-|  [<][>][+][-]    |                                              |
-|  R G B A sliders |                                              |
+|  [<][>][+][-]    |         ... or, in `oklab` mode:  [L][a][b]  |
+|  R G B A sliders |                                   [+][-]     |
+|                  |                                   L a from   |
+|                  |                                   to steps   |
 +------------------+----------------------------------------------+
-| file* | x,y tile N | #rrggbbaa [sel/count] | WxH tiles of Npx   |
+| file* | x,y tile N | #rrggbbaa [sel/count] | mode | WxH tiles   |
 +----------------------------------------------------------------+
 ```
+
+The mode segment is `list`, or `oklab [ramp/count] AXIS from..to xSTEPS` — so a
+screenshot of a generated palette names the sweep that produced it.
 
 The canvas camera's `viewport` is fitted each frame to the region the sidebar and
 status strip leave free, so canvas world space is independent of the sidebar
@@ -108,7 +148,8 @@ bevy_sprite_editor/
 │   ├── cli.rs               # argv -> LaunchOptions
 │   ├── config.rs            # Constants, colours, helpers
 │   ├── atlas.rs             # AtlasDocument: the pixel grid
-│   ├── palette.rs           # Palette + serde mirrors
+│   ├── palette.rs           # Palette, PaletteMode + serde mirrors
+│   ├── oklab.rs             # Oklab ramps: the generated palette
 │   ├── document.rs          # Edit requests and the systems applying them
 │   ├── file_io.rs           # PNG + JSON codec, load and save
 │   ├── canvas_view.rs       # Camera viewport, scroll, cursor -> pixel
@@ -144,6 +185,25 @@ struct Palette {                // Resource
     selected: usize,            // always valid; there is always a draw colour
 }
 
+struct PaletteMode {            // Resource
+    generated: bool,            // which specification owns `Palette`
+    stashed: Option<Palette>,   // the hand-edited one, parked; Some iff generated
+}
+
+struct OklabRamp {
+    axis: OklabAxis,            // Lightness | A | B — which value sweeps
+    lightness: f32,             // all three stored; the swept one is ignored
+    a: f32,
+    b: f32,
+    from: f32,                  // the sweep, in the swept axis' units;
+    to: f32,                    //   from > to runs the ramp backwards
+    steps: usize,               // clamped to 2..=24
+}
+
+struct OklabRamps {             // Resource
+    ramps: Vec<OklabRamp>,      // colours concatenated in order *are* the palette
+}
+
 struct CanvasView {             // Resource
     scroll_x: f32,              // screen pixels
     pixel_scale: f32,
@@ -155,7 +215,11 @@ struct CanvasView {             // Resource
 ### Edit requests (Bevy 0.19 "messages")
 
 `PaintPixelRequested { x, y }`, `SelectColorRequested { index }`,
-`AddTileRequested { tiles }`, `ScrollRequested { tiles }`, `SaveRequested`.
+`AddTileRequested { tiles }`, `ScrollRequested { tiles }`, `SaveRequested`,
+`SetPaletteColorRequested { index, color }`, `AddPaletteColorRequested { color }`,
+`RemovePaletteColorRequested { index }`, `MovePaletteColorRequested { from, to }`,
+`TogglePaletteModeRequested`, `SetRampRequested { index, ramp }`,
+`AddRampRequested`, `RemoveRampRequested { index }`.
 
 Input systems only emit these; `document.rs` and `file_io.rs` are the only
 places that apply them. The dev harness emits the same ones, which is what makes
@@ -173,6 +237,10 @@ a screenshot proof that the real path works.
 | Mouse Left drag (R/G/B/A slider) | Set that channel of the selected colour |
 | Mouse Left click (`<` / `>`) | Move the selected entry one slot; clamps at the ends |
 | Mouse Left click (`+` / `-`) | Append an entry and select it / drop the selected one |
+| Mouse Left click (`palette: …`) | Switch between the `list` and `oklab` specifications |
+| Mouse Left click (`L` / `a` / `b`) | Sweep that value in the edited ramp |
+| Mouse Left drag (ramp slider) | Set one of the edited ramp's six numbers |
+| `M` | Switch palette specification |
 | `Space` | Add a tile on the right |
 | `Arrow Left` or `A` | Scroll one tile left |
 | `Arrow Right` or `D` | Scroll one tile right |
@@ -198,10 +266,12 @@ bevy_sprite_editor [PATH] [options]
 ```
 
 Script verbs: `select N`, `paint X,Y`, `tile+[N]`, `scroll+[N]`, `scroll-[N]`,
-`color #rrggbb[aa]`, `color+`, `color-`, `move-`, `move+`, `save`, `wait [N]` —
-one step per frame, semicolon separated. The `color` and `move` verbs stand in
-for the sidebar's sliders and buttons, which no script can point at; they act on
-the selection and clamp at the ends the same way.
+`color #rrggbb[aa]`, `color+`, `color-`, `move-`, `move+`, `mode`, `axis L|a|b`,
+`ramp FIELD VALUE`, `ramp+`, `ramp-`, `save`, `wait [N]` — one step per frame,
+semicolon separated. The `color`, `move`, `axis` and `ramp` verbs stand in for
+the sidebar's sliders and buttons, which no script can point at; they act on the
+selection (or the ramp it came from) and clamp at the ends the same way. A ramp
+field is `L`, `a`, `b`, `from`, `to` or `steps` — the sidebar's own captions.
 
 ---
 
@@ -247,8 +317,10 @@ drawing and hit testing cannot drift apart.
 6. Scroll horizontally by whole tiles, clamped
 7. Tile boundaries and an optional pixel grid
 8. Status strip: file, unsaved marker, hovered pixel and tile, selected colour,
-   atlas size
+   palette mode and edited ramp, atlas size
 9. Scripted dev harness with self-capture and exit
+10. A second way to specify the palette: Oklab ramps, several at once, switched
+    with the sidebar's mode button or `M`
 
 ### Not implemented
 1. Undo / redo — `history.rs` exists, tested, unwired, and palette edits are
@@ -260,6 +332,7 @@ drawing and hit testing cannot drift apart.
 6. A file picker; paths come from argv
 7. A checkerboard behind transparent pixels — they show the flat background, and
    the transparent swatch reads as an empty slot in the sidebar
+8. A transparent entry in a generated palette; erasing needs the `list` mode
 
 ---
 
@@ -281,6 +354,20 @@ drawing and hit testing cannot drift apart.
 - **The channel sliders are RGBA, not HSL,** so what they show and what the
   status strip's hex reports cannot drift, and no colour-space round trip can
   lose a value.
+- **The generated palette regenerates into `Palette`,** rather than living
+  beside it. Painting, the swatches, the theme, the status strip and the save
+  path all stay unaware that there are two specifications; the only code that
+  knows is the applier that swaps them. The cost is that a hand edit has to be
+  refused while the ramps are in charge.
+- **Out-of-gamut Oklab loses chroma, not hue.** Clipping each sRGB channel is
+  cheaper but makes the far end of a chroma sweep repeat one corner colour.
+- **The edited ramp is derived from the selection,** not stored. Clicking a
+  swatch is therefore also how you pick which ramp the sliders act on, and there
+  is no second piece of state to keep in step.
+- **The sidecar carries both specifications, and which one was live** — the
+  presence of the parked palette says so, mirroring `PaletteMode`'s own
+  invariant rather than adding a boolean that could contradict it. Saving in one
+  mode does not cost you the other.
 - **The sliders are a view of the palette,** never a second store: they emit a
   request and read their position back from `Palette`, even mid-drag.
 - **Reordering is two arrow buttons, not drag-and-drop.** It reuses the existing

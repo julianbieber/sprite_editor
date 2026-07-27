@@ -14,6 +14,9 @@
 //! here — they emit the same requests those widgets do, against the selected
 //! entry, and clamp at the ends the same way.
 //!
+//! `mode`, `axis`, `ramp`, `ramp+` and `ramp-` do the same for the generated
+//! palette's editor, against the ramp the selection came from.
+//!
 //! The window manager may resize the window a frame or two after it opens, which
 //! changes the canvas rect. `warmup_frames` waits that out before the first step,
 //! and `settle_frames` waits for the last edit to reach the screen before the
@@ -31,10 +34,12 @@ use crate::canvas_view::ScrollRequested;
 use crate::cli::LaunchOptions;
 use crate::config::{hex_to_color, NEW_PALETTE_COLOR};
 use crate::document::{
-    AddPaletteColorRequested, AddTileRequested, MovePaletteColorRequested, PaintPixelRequested,
-    RemovePaletteColorRequested, SelectColorRequested, SetPaletteColorRequested,
+    AddPaletteColorRequested, AddRampRequested, AddTileRequested, MovePaletteColorRequested,
+    PaintPixelRequested, RemovePaletteColorRequested, RemoveRampRequested, SelectColorRequested,
+    SetPaletteColorRequested, SetRampRequested, TogglePaletteModeRequested,
 };
 use crate::file_io::SaveRequested;
+use crate::oklab::{OklabAxis, OklabRamp, OklabRamps, RampField};
 
 /// How long to wait for a capture before giving up.
 const SCREENSHOT_TIMEOUT_FRAMES: u32 = 600;
@@ -61,6 +66,16 @@ pub enum DevStep {
     RemoveColor,
     /// Shift the selected entry one slot, as the `<` and `>` buttons do.
     MoveColor(i32),
+    /// Switch which specification owns the palette, as the mode button does.
+    ToggleMode,
+    /// Sweep a different value of the edited ramp, as the axis buttons do.
+    SetRampAxis(OklabAxis),
+    /// Move one of the edited ramp's numbers, as its sliders do.
+    SetRampField(RampField, f32),
+    /// Duplicate the edited ramp, as the generated editor's `+` button does.
+    AddRamp,
+    /// Drop the edited ramp, as its `-` button does.
+    RemoveRamp,
 }
 
 #[derive(Resource, Debug, Default)]
@@ -116,6 +131,12 @@ fn parse_step(part: &str) -> Option<DevStep> {
     if verb == "move+" {
         return Some(DevStep::MoveColor(1));
     }
+    if verb == "ramp+" {
+        return Some(DevStep::AddRamp);
+    }
+    if verb == "ramp-" {
+        return Some(DevStep::RemoveRamp);
+    }
     if let Some(count) = verb.strip_prefix("tile+") {
         return Some(DevStep::AddTile(count_or(count, 1)));
     }
@@ -143,10 +164,39 @@ fn parse_step(part: &str) -> Option<DevStep> {
             }
         },
         "tile" => Some(DevStep::AddTile(count_or(argument, 1))),
+        "mode" => Some(DevStep::ToggleMode),
+        "axis" => match OklabAxis::parse(argument) {
+            Some(axis) => Some(DevStep::SetRampAxis(axis)),
+            None => {
+                warn!("script: `axis` needs L, a or b, got {argument:?}");
+                None
+            }
+        },
+        "ramp" => parse_ramp_field(argument),
         "save" => Some(DevStep::Save),
         "wait" => Some(DevStep::Wait(count_or(argument, 1))),
         other => {
             warn!("script: ignoring unknown verb {other:?}");
+            None
+        }
+    }
+}
+
+/// `"from 0.2"` — a ramp field by the name the sidebar captions it with, and the
+/// value to move it to.
+fn parse_ramp_field(argument: &str) -> Option<DevStep> {
+    let Some((name, value)) = argument.split_once(char::is_whitespace) else {
+        warn!("script: `ramp` needs a field and a value, got {argument:?}");
+        return None;
+    };
+    match (RampField::parse(name), value.trim().parse()) {
+        (Some(field), Ok(value)) => Some(DevStep::SetRampField(field, value)),
+        (None, _) => {
+            warn!("script: `ramp` has no field {name:?}");
+            None
+        }
+        (_, Err(_)) => {
+            warn!("script: `ramp {name}` needs a number, got {value:?}");
             None
         }
     }
@@ -217,6 +267,7 @@ fn load_script(options: Res<LaunchOptions>, mut script: ResMut<DevScript>) {
 fn run_dev_script(
     mut script: ResMut<DevScript>,
     palette: Option<Res<crate::palette::Palette>>,
+    ramps: Option<Res<OklabRamps>>,
     mut paint: MessageWriter<PaintPixelRequested>,
     mut select: MessageWriter<SelectColorRequested>,
     mut add_tile: MessageWriter<AddTileRequested>,
@@ -226,6 +277,10 @@ fn run_dev_script(
     mut add_color: MessageWriter<AddPaletteColorRequested>,
     mut remove_color: MessageWriter<RemovePaletteColorRequested>,
     mut move_color: MessageWriter<MovePaletteColorRequested>,
+    mut toggle_mode: MessageWriter<TogglePaletteModeRequested>,
+    mut set_ramp: MessageWriter<SetRampRequested>,
+    mut add_ramp: MessageWriter<AddRampRequested>,
+    mut remove_ramp: MessageWriter<RemoveRampRequested>,
 ) {
     if !script.enabled {
         return;
@@ -292,7 +347,45 @@ fn run_dev_script(
                 move_color.write(MovePaletteColorRequested { from, to });
             }
         }
+        DevStep::ToggleMode => {
+            toggle_mode.write(TogglePaletteModeRequested);
+        }
+        DevStep::AddRamp => {
+            add_ramp.write(AddRampRequested);
+        }
+        DevStep::RemoveRamp => {
+            if let Some((index, _)) = edited_ramp(palette.as_deref(), ramps.as_deref()) {
+                remove_ramp.write(RemoveRampRequested { index });
+            }
+        }
+        DevStep::SetRampAxis(axis) => {
+            if let Some((index, ramp)) = edited_ramp(palette.as_deref(), ramps.as_deref()) {
+                set_ramp.write(SetRampRequested {
+                    index,
+                    ramp: ramp.with_axis(axis),
+                });
+            }
+        }
+        DevStep::SetRampField(field, value) => {
+            if let Some((index, ramp)) = edited_ramp(palette.as_deref(), ramps.as_deref()) {
+                set_ramp.write(SetRampRequested {
+                    index,
+                    ramp: field.apply(ramp, value),
+                });
+            }
+        }
     }
+}
+
+/// The ramp the generated editor would be acting on — the one that produced the
+/// selected swatch, exactly as the sidebar picks it.
+fn edited_ramp(
+    palette: Option<&crate::palette::Palette>,
+    ramps: Option<&OklabRamps>,
+) -> Option<(usize, OklabRamp)> {
+    let (palette, ramps) = (palette?, ramps?);
+    let index = ramps.ramp_of(palette.selected);
+    ramps.get(index).map(|ramp| (index, *ramp))
 }
 
 /// Waits for the world to settle, captures, then quits.
@@ -387,6 +480,43 @@ mod tests {
     }
 
     #[test]
+    fn the_generated_palette_verbs_parse() {
+        assert_eq!(
+            parse_script("mode; ramp+; ramp-; axis b; ramp from -0.1; ramp steps 5"),
+            vec![
+                DevStep::ToggleMode,
+                DevStep::AddRamp,
+                DevStep::RemoveRamp,
+                DevStep::SetRampAxis(OklabAxis::B),
+                DevStep::SetRampField(RampField::From, -0.1),
+                DevStep::SetRampField(RampField::Steps, 5.0),
+            ]
+        );
+    }
+
+    /// The fixed values are named by their axis, and the sidebar captions them
+    /// the same way — one spelling for a click and for a script.
+    #[test]
+    fn a_ramps_fixed_values_are_named_by_their_axis() {
+        assert_eq!(
+            parse_script("ramp L 0.7; ramp a -0.05; ramp b 0.2"),
+            vec![
+                DevStep::SetRampField(RampField::Fixed(OklabAxis::Lightness), 0.7),
+                DevStep::SetRampField(RampField::Fixed(OklabAxis::A), -0.05),
+                DevStep::SetRampField(RampField::Fixed(OklabAxis::B), 0.2),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_malformed_ramp_step_is_skipped_without_losing_the_rest() {
+        assert_eq!(
+            parse_script("ramp; ramp zzz 1; ramp from x; axis q; select 1"),
+            vec![DevStep::Select(1)]
+        );
+    }
+
+    #[test]
     fn a_colour_without_a_valid_hex_string_is_skipped() {
         assert_eq!(parse_script("color; color zzz; select 1"), vec![DevStep::Select(1)]);
     }
@@ -424,10 +554,9 @@ mod tests {
         assert!(parse_script("   ;  ").is_empty());
     }
 
-    /// The harness must emit the same requests real input does, one per frame.
-    #[test]
-    fn stepping_emits_one_request_per_frame() {
-        let mut app = App::new();
+    /// Every request the harness can emit, so a script step that had nowhere to
+    /// write would fail here rather than silently at runtime.
+    fn register_requests(app: &mut App) -> &mut App {
         app.add_plugins(MinimalPlugins)
             .add_message::<PaintPixelRequested>()
             .add_message::<SelectColorRequested>()
@@ -438,6 +567,17 @@ mod tests {
             .add_message::<AddPaletteColorRequested>()
             .add_message::<RemovePaletteColorRequested>()
             .add_message::<MovePaletteColorRequested>()
+            .add_message::<TogglePaletteModeRequested>()
+            .add_message::<SetRampRequested>()
+            .add_message::<AddRampRequested>()
+            .add_message::<RemoveRampRequested>()
+    }
+
+    /// The harness must emit the same requests real input does, one per frame.
+    #[test]
+    fn stepping_emits_one_request_per_frame() {
+        let mut app = App::new();
+        register_requests(&mut app)
             .insert_resource(DevScript {
                 steps: parse_script("select 3; paint 1,2"),
                 settle_frames: 1,
@@ -481,16 +621,7 @@ mod tests {
     #[test]
     fn wait_holds_the_cursor_for_the_requested_frames() {
         let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .add_message::<PaintPixelRequested>()
-            .add_message::<SelectColorRequested>()
-            .add_message::<AddTileRequested>()
-            .add_message::<ScrollRequested>()
-            .add_message::<SaveRequested>()
-            .add_message::<SetPaletteColorRequested>()
-            .add_message::<AddPaletteColorRequested>()
-            .add_message::<RemovePaletteColorRequested>()
-            .add_message::<MovePaletteColorRequested>()
+        register_requests(&mut app)
             .insert_resource(DevScript {
                 steps: parse_script("wait 3; paint 0,0"),
                 settle_frames: 1,
@@ -524,16 +655,7 @@ mod tests {
     #[test]
     fn a_disabled_harness_does_nothing() {
         let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .add_message::<PaintPixelRequested>()
-            .add_message::<SelectColorRequested>()
-            .add_message::<AddTileRequested>()
-            .add_message::<ScrollRequested>()
-            .add_message::<SaveRequested>()
-            .add_message::<SetPaletteColorRequested>()
-            .add_message::<AddPaletteColorRequested>()
-            .add_message::<RemovePaletteColorRequested>()
-            .add_message::<MovePaletteColorRequested>()
+        register_requests(&mut app)
             .insert_resource(DevScript {
                 steps: parse_script("paint 0,0"),
                 enabled: false,

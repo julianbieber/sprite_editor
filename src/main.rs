@@ -36,6 +36,7 @@ mod file_io;
 #[allow(dead_code)]
 mod history;
 mod input;
+mod oklab;
 mod palette;
 mod ui_chrome;
 

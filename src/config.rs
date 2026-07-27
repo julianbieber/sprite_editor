@@ -2,6 +2,8 @@
 
 use bevy::prelude::*;
 
+use crate::oklab::{OklabAxis, OklabRamp};
+
 // ============================================================================
 // DISPLAY CONFIGURATION
 // ============================================================================
@@ -40,11 +42,18 @@ pub const SWATCH_SIZE: f32 = 44.0;
 pub const SWATCH_GAP: f32 = 6.0;
 pub const SWATCH_BORDER: f32 = 2.0;
 
+/// Gap between two rows of the swatch grid. Wider than the gap between swatches
+/// so that one generated ramp reads as one run: the sidebar only fits three
+/// swatches across, so every ramp wraps and the grouping is carried entirely by
+/// this being the larger of the two gaps.
+pub const SWATCH_ROW_GAP: f32 = 16.0;
+
 /// Vertical gap between the rows of the palette editor under the swatches.
 pub const EDITOR_ROW_GAP: f32 = 5.0;
 
-/// Font size for the editor's channel captions and its two buttons.
-pub const EDITOR_FONT_SIZE: f32 = 11.0;
+/// Width of the caption column beside a slider. Wide enough for the generated
+/// editor's `from` and `to`, so both editors line their sliders up the same.
+pub const EDITOR_LABEL_WIDTH: f32 = 26.0;
 
 // ============================================================================
 // COLOURS
@@ -94,6 +103,70 @@ pub const DEFAULT_SELECTED_COLOR: usize = 1;
 /// What the `+` button appends. Opaque white reads as "a new colour to set"
 /// rather than looking like nothing happened, which appending transparent would.
 pub const NEW_PALETTE_COLOR: Srgba = Srgba::new(1.0, 1.0, 1.0, 1.0);
+
+// ============================================================================
+// GENERATED (OKLAB) PALETTE CONFIGURATION
+// ============================================================================
+
+/// How far the `a` and `b` axes may be pushed in either direction.
+///
+/// Oklab's own range is ±1, but sRGB runs out of gamut long before ±0.4 at any
+/// lightness, so a wider slider would spend most of its travel on colours the
+/// screen cannot tell apart.
+pub const OKLAB_AB_LIMIT: f32 = 0.4;
+
+/// A generated ramp is at least a pair — there is nothing to interpolate with
+/// one colour — and at most this, which is what the sidebar shows before the
+/// swatch grid crowds out the ramps below it.
+pub const OKLAB_MIN_STEPS: usize = 2;
+pub const OKLAB_MAX_STEPS: usize = 24;
+/// What the `N` slider starts a duplicated ramp on. Also the default ramps'.
+pub const OKLAB_DEFAULT_STEPS: usize = 8;
+
+/// The sweep a ramp adopts when it changes axis. The previous one was in the
+/// old axis' units, where it means nothing: `0.15..0.95` reads as "shadow to
+/// highlight" on lightness and as "well past the gamut both ways" on chroma.
+pub const OKLAB_LIGHTNESS_SWEEP: (f32, f32) = (0.15, 0.95);
+pub const OKLAB_CHROMA_SWEEP: (f32, f32) = (-0.15, 0.15);
+
+/// Halvings the gamut search takes. 12 puts the chroma within 1/4096 of the
+/// boundary, which is finer than an 8-bit channel can show.
+pub const OKLAB_GAMUT_SEARCH_STEPS: u32 = 12;
+
+/// The ramps the generated mode starts with — a warm and a cool value ramp to
+/// shade with, and one hue sweep to pick from.
+pub const DEFAULT_OKLAB_RAMPS: &[OklabRamp] = &[
+    // Warm: the usual sprite shading run, shadow through highlight.
+    OklabRamp {
+        axis: OklabAxis::Lightness,
+        lightness: 0.60,
+        a: 0.06,
+        b: 0.10,
+        from: OKLAB_LIGHTNESS_SWEEP.0,
+        to: OKLAB_LIGHTNESS_SWEEP.1,
+        steps: OKLAB_DEFAULT_STEPS,
+    },
+    // Cool: the same sweep on the other side of neutral.
+    OklabRamp {
+        axis: OklabAxis::Lightness,
+        lightness: 0.60,
+        a: -0.05,
+        b: -0.10,
+        from: OKLAB_LIGHTNESS_SWEEP.0,
+        to: OKLAB_LIGHTNESS_SWEEP.1,
+        steps: OKLAB_DEFAULT_STEPS,
+    },
+    // Green through red at one lightness: picks a hue rather than a value.
+    OklabRamp {
+        axis: OklabAxis::A,
+        lightness: 0.65,
+        a: 0.0,
+        b: 0.08,
+        from: OKLAB_CHROMA_SWEEP.0,
+        to: OKLAB_CHROMA_SWEEP.1,
+        steps: OKLAB_DEFAULT_STEPS,
+    },
+];
 
 // ============================================================================
 // HISTORY CONFIGURATION

@@ -117,6 +117,66 @@ fi
 ./tests/shot.sh "$OUT/04-palette-reopened.png" "" -- "$PAL.png"
 
 echo
+echo "7. the generated palette, painted with and saved"
+# The point of generating into `Palette` is that nothing downstream knows: a
+# generated colour has to paint and save exactly like a listed one. This run
+# switches, edits a second ramp, paints with a colour from a third, and saves —
+# so the sidecar proves both the generated colours and the ramps behind them
+# reached the file.
+GEN="$OUT/doc/generated"
+rm -f "$GEN.png" "$GEN.atlas.json"
+./tests/shot.sh "$OUT/05-generated.png" \
+    "mode; select 10; axis b; ramp steps 6; ramp+; select 3; paint 1,1; paint 2,2; save" \
+    -- "$GEN"
+
+# `serde_json::to_string_pretty` writes fields in declaration order, so the live
+# palette is everything before the "generated" key and the ramps and the parked
+# palette everything after it. Splitting there keeps this to grep and sed.
+LIVE=$(sed '/"generated"/,$d' "$GEN.atlas.json" | grep -c '"r":')
+BLOCK=$(sed -n '/"generated"/,$p' "$GEN.atlas.json")
+RAMPS=$(printf '%s\n' "$BLOCK" | grep -c '"axis"')
+PARKED=$(printf '%s\n' "$BLOCK" | grep -c '"r":')
+
+# Three default ramps of 8, minus the two the shortened one lost, plus the
+# 6-step copy the `ramp+` made: 8 + 6 + 8 + 6.
+if [ "$LIVE" != "28" ]; then
+    echo "   FAIL: sidecar has $LIVE generated colours, expected 28" >&2
+    exit 1
+fi
+echo "   sidecar carries $LIVE generated colours"
+
+if [ "$RAMPS" != "4" ]; then
+    echo "   FAIL: sidecar has $RAMPS ramps, expected 4" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$BLOCK" | grep -q '"axis": "b"'; then
+    echo "   FAIL: the ramp switched to sweeping b is not in the sidecar" >&2
+    exit 1
+fi
+echo "   sidecar carries $RAMPS ramps, including the one switched to b"
+
+# The hand-edited palette was parked, not discarded, so the built-in 17 have to
+# be in there too — otherwise switching back after a reopen would lose them.
+if [ "$PARKED" != "17" ]; then
+    echo "   FAIL: sidecar parked $PARKED hand-edited colours, expected 17" >&2
+    exit 1
+fi
+echo "   sidecar parks $PARKED hand-edited colours behind them"
+
+# Reopen and save straight back out. A lossless sidecar reproduces itself byte
+# for byte — which is the strongest statement available that nothing about
+# either palette was dropped, reordered or rounded on the way through.
+cp "$GEN.atlas.json" "$OUT/doc/generated.expected.json"
+./tests/shot.sh "$OUT/06-generated-reopened.png" "save" -- "$GEN.png"
+if diff -q "$OUT/doc/generated.expected.json" "$GEN.atlas.json" >/dev/null; then
+    echo "   reopening and re-saving reproduces the sidecar exactly"
+else
+    echo "   FAIL: the sidecar changed across a reopen" >&2
+    diff "$OUT/doc/generated.expected.json" "$GEN.atlas.json" >&2 || true
+    exit 1
+fi
+
+echo
 echo "=========================================="
 echo "All checks passed"
 echo "=========================================="
@@ -140,5 +200,15 @@ echo "  04-palette-reopened.png"
 echo "                  — the same file reopened: the orange swatch is still"
 echo "                    first and still selected, so both the colour and the"
 echo "                    order survived the sidecar. No '*'."
+echo "  05-generated.png"
+echo "                  — 'palette: oklab'. Four ramps, each on its own run of"
+echo "                    rows: warm 8, cool 6 sweeping b (blue to olive), hue 8,"
+echo "                    and a 6-step copy of the cool one. Two pixels painted"
+echo "                    with a generated colour. No '*' (it saved)."
+echo "  06-generated-reopened.png"
+echo "                  — the same file reopened: identical to 05. It comes back"
+echo "                    in 'oklab' mode, on the same ramp, with the same sweep"
+echo "                    in the sliders — the ramps are in the sidecar, not"
+echo "                    just the colours they made."
 echo
 echo "To drive it by hand:  cargo run -- $WORK.png"

@@ -8,8 +8,9 @@ A Bevy 0.19 desktop editor for sprite atlases: one image split into square tiles
 edited pixel by pixel with a colour palette. Single binary crate, no workspace.
 
 The supported workflow is: open a file from a CLI argument, select a palette
-colour, click to paint pixels, edit the palette, add tiles on the right, scroll a
-wide atlas, save.
+colour, click to paint pixels, edit the palette (as a hand-edited list, or as a
+set of generated Oklab ramps — a button switches), add tiles on the right, scroll
+a wide atlas, save.
 **Undo/redo is deliberately not wired up** — `src/history.rs` is tested and
 compiles but nothing calls it (`#[allow(dead_code)]` on the module declaration).
 Note that palette edits are therefore not recorded into it either. Zoom and a
@@ -25,13 +26,13 @@ sheet; both are kept current, but `src/` wins if they disagree.
 
 ```bash
 cargo check --all-targets        # fast feedback
-cargo test                       # 121 unit tests, in #[cfg(test)] mods inside src/*.rs
+cargo test                       # 176 unit tests, in #[cfg(test)] mods inside src/*.rs
 cargo test a_wide_atlas          # single test by name
 cargo test palette::             # one module
 cargo run -- art/demo            # open art/demo.png + art/demo.atlas.json
 cargo run -- --help              # flags and script verbs
 
-./tests/test_application.sh      # check + test + release build + two scripted screenshot runs
+./tests/test_application.sh      # check + test + release build + four scripted screenshot runs
 ./tests/shot.sh OUT.png "SCRIPT" [-- EDITOR ARGS]
 ```
 
@@ -48,10 +49,12 @@ editor screenshots itself:
 
 then `Read` the PNG. Script verbs: `select N`, `paint X,Y`, `tile+[N]`,
 `scroll+[N]`, `scroll-[N]`, `color #rrggbb[aa]`, `color+`, `color-`, `move-`,
-`move+`, `save`, `wait [N]`; one step per frame. The `color` and `move` verbs
+`move+`, `mode`, `axis L|a|b`, `ramp FIELD VALUE`, `ramp+`, `ramp-`, `save`,
+`wait [N]`; one step per frame. The `color`, `move`, `axis` and `ramp` verbs
 stand in for the sidebar's sliders and buttons — a script has no pointer to drag
-with — and act on the selected entry, clamping at the ends exactly as those
-widgets do. The capture
+with — and act on the selected entry (or the ramp it came from), clamping at the
+ends exactly as those widgets do. A ramp `FIELD` is `L`, `a`, `b`, `from`, `to`
+or `steps`, spelled exactly as the sidebar captions it. The capture
 uses Bevy's own `Screenshot` API, so no window manager, focus or `sleep` is
 involved and the result is deterministic for a build. `--warmup-frames` (default
 30) waits out the window manager's initial resize before the first step, and
@@ -60,7 +63,8 @@ involved and the result is deterministic for a build. `--warmup-frames` (default
 
 The status strip is deliberately informative so a screenshot is
 self-describing — file name, `*` when unsaved, hovered pixel, its tile, the
-selected colour as hex, `[selected/count]` for the palette, and the atlas size.
+selected colour as hex, `[selected/count]` for the palette, the palette mode
+(and, in `oklab`, which ramp of how many and what it sweeps), and the atlas size.
 Read values off it rather than guessing.
 
 ## Architecture
@@ -71,7 +75,9 @@ Seven plugins, composed in `main.rs`. Two rules explain most of the layout:
 request messages (`PaintPixelRequested`, `SelectColorRequested`,
 `AddTileRequested`, `ScrollRequested`, `SaveRequested`,
 `SetPaletteColorRequested`, `AddPaletteColorRequested`,
-`RemovePaletteColorRequested`, `MovePaletteColorRequested`); `document.rs` and
+`RemovePaletteColorRequested`, `MovePaletteColorRequested`,
+`TogglePaletteModeRequested`, `SetRampRequested`, `AddRampRequested`,
+`RemoveRampRequested`); `document.rs` and
 `file_io.rs` are the only places that apply them. This is what makes the
 screenshot harness trustworthy — it drives the same messages a human does, so a
 passing screenshot cannot hide broken interaction. If you add an interaction, add
@@ -85,12 +91,13 @@ screen and atlas space. Everything else asks it.
 | `main.rs` | plugin + startup order, the two cameras, `CanvasCamera`/`UiCamera` markers |
 | `cli.rs` | argv → `LaunchOptions` (hand-rolled; no clap) |
 | `atlas.rs` | `AtlasDocument` — the pixel grid |
-| `palette.rs` | `Palette`, plus `ColorData`/`PaletteData` serde mirrors |
+| `palette.rs` | `Palette` and `PaletteMode`, plus `ColorData`/`PaletteData` serde mirrors |
+| `oklab.rs` | `OklabRamp`/`OklabRamps`/`RampField` — the generated palette, and the gamut fit |
 | `document.rs` | request messages and the systems that apply them; `DocumentPath` |
-| `file_io.rs` | PNG + JSON codec, startup load, save on request |
+| `file_io.rs` | PNG + JSON codec (both palette specifications), startup load, save on request |
 | `canvas_view.rs` | camera viewport fitting, scroll offset, cursor → pixel |
 | `canvas_render.rs` | the atlas texture, sprite placement, tile grid |
-| `ui_chrome.rs` | Feathers palette sidebar (swatches, RGBA sliders, +/-) and status strip |
+| `ui_chrome.rs` | Feathers palette sidebar (mode button, swatches, both editors) and status strip |
 | `input.rs` | keys and mouse → requests |
 | `dev_harness.rs` | script → requests → screenshot → exit |
 | `history.rs` | undo/redo. Compiles, tested, **unwired** |
@@ -146,6 +153,55 @@ y-up and centre-origin, hence the flip in `atlas_top()`.
 The canvas sprite is one entity with `Anchor::TOP_LEFT`, so its translation *is*
 the atlas origin. Its texture is reuploaded only when `AtlasDocument.revision`
 differs from `CanvasTexture.revision`.
+
+### Two ways to specify the palette, one `Palette`
+
+The mode button at the top of the sidebar switches between a hand-edited list and
+Oklab ramps. It does **not** introduce a second palette. `oklab` mode rewrites
+`Palette.colors` from `OklabRamps` and parks the hand-edited palette whole in
+`PaletteMode::stash`; switching back puts it straight back, selection and all.
+Everything downstream — painting, the theme tokens, the swatches, the status
+strip, `file_io` — is unaware there are two specifications.
+
+That is what makes the feature cheap, and it buys exactly one obligation:
+`apply_palette_edits` **refuses** in `oklab` mode, and drains the requests rather
+than leaving them buffered. The colours are derived, so a hand edit would survive
+until the next regenerate and then vanish — worse than never applying.
+
+Two things about ramps are worth knowing before touching `oklab.rs`:
+
+- **Out-of-gamut colours lose chroma, not channels.** Oklab is wider than sRGB
+  and a chroma sweep runs off the end of it. Clipping each channel would make the
+  last few swatches of a ramp identical; `to_srgba_in_gamut` binary-searches the
+  chroma down to the gamut boundary instead, keeping hue and lightness.
+- **The edited ramp is derived from the selection** (`ramps.ramp_of(selected)`),
+  never stored. Clicking a swatch is therefore also how you choose which ramp the
+  sliders act on, and there is no second index to keep in step. Every generated
+  widget goes through `edited_ramp`.
+
+The sidebar rebuilds on *shape*, not on change, and there are two shapes:
+`BuiltSwatchRows` (a row length per ramp — the total is not enough, since two
+ramps can trade steps) and `BuiltEditor` (mode, ramp index, and the ramp's axis,
+because the axis decides which two values get sliders). Both are resources rather
+than `Local`s so `build_chrome` can seed them from `Startup`.
+
+**The sync systems run before the rebuild systems**, and that ordering is load
+bearing. Both sides queue commands; a mode switch retunes the sliders it is about
+to replace, so a rebuild-then-sync order writes to a despawned entity and panics.
+
+The sidecar carries **both** specifications and which one was live: `palette` is
+whatever was being drawn with, and the `generated` block holds the ramps plus,
+when they were in charge, the parked hand-edited palette. The parked one's
+presence is what records the mode — the same invariant `PaletteMode` keeps, so
+the codec cannot encode a state the resource could not hold. The block is
+optional and the format version stays `1.0`, because the field is additive in
+both directions. On load the generated palette is **rebuilt from the ramps**
+rather than read back out of the stored colours, so editing the JSON's ramps by
+hand works and `Palette` matches `OklabRamps` from the first frame; anything
+outside the editor's limits is clamped by `OklabRamps::sanitised`.
+
+One consequence worth remembering: a ramp edit dirties the document *even in
+`list` mode*, because the sidecar stores the ramps whichever mode is live.
 
 ### The palette sidebar goes through the Feathers theme
 
@@ -244,6 +300,10 @@ observer silently never fires.
 | Drag an R/G/B/A slider | Set that channel of the selected colour |
 | Click `+` | Append an opaque white entry and select it |
 | Click `-` | Drop the selected entry (refused for the last one) |
+| Click `palette: …` / `M` | Switch between the `list` and `oklab` specifications |
+| Click `L` / `a` / `b` | Sweep that value in the edited ramp; resets its range |
+| Drag a ramp slider | Set one of the edited ramp's six numbers |
+| Click `+` / `-` (oklab) | Duplicate the edited ramp and select it / drop it |
 | `Space` | Add a tile on the right |
 | `Arrow Left` / `A` | Scroll one tile left |
 | `Arrow Right` / `D` | Scroll one tile right |

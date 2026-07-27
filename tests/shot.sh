@@ -16,7 +16,10 @@
 #
 # Script verbs: select N | paint X,Y | tile+[N] | scroll+[N] | scroll-[N]
 #               color #rrggbb[aa] | color+ | color- | move- | move+
+#               mode | axis L|a|b | ramp FIELD VALUE | ramp+ | ramp-
 #               save | wait [N]
+#
+# A ramp FIELD is L, a, b, from, to or steps — the sidebar's own captions.
 
 set -euo pipefail
 

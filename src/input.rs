@@ -4,7 +4,7 @@
 use bevy::prelude::*;
 
 use crate::canvas_view::{HoveredPixel, ScrollRequested};
-use crate::document::{AddTileRequested, PaintPixelRequested};
+use crate::document::{AddTileRequested, PaintPixelRequested, TogglePaletteModeRequested};
 use crate::file_io::SaveRequested;
 
 // ============================================================================
@@ -78,9 +78,15 @@ fn keyboard_commands(
     mut add_tile: MessageWriter<AddTileRequested>,
     mut scroll: MessageWriter<ScrollRequested>,
     mut save: MessageWriter<SaveRequested>,
+    mut palette_mode: MessageWriter<TogglePaletteModeRequested>,
 ) {
     if keys.just_pressed(KeyCode::Space) {
         add_tile.write(AddTileRequested { tiles: 1 });
+    }
+
+    // The same thing the sidebar's mode button does; `M` for mode.
+    if keys.just_pressed(KeyCode::KeyM) {
+        palette_mode.write(TogglePaletteModeRequested);
     }
 
     if keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::KeyA) {
@@ -115,6 +121,7 @@ mod tests {
         tiles: Vec<u32>,
         scrolls: Vec<i32>,
         saves: usize,
+        mode_toggles: usize,
     }
 
     fn record(
@@ -122,8 +129,10 @@ mod tests {
         mut tiles: MessageReader<AddTileRequested>,
         mut scrolls: MessageReader<ScrollRequested>,
         mut saves: MessageReader<SaveRequested>,
+        mut modes: MessageReader<TogglePaletteModeRequested>,
         mut recorded: ResMut<Recorded>,
     ) {
+        recorded.mode_toggles += modes.read().count();
         let seen: Vec<(u32, u32)> = paints.read().map(|m| (m.x, m.y)).collect();
         recorded.paints.extend(seen);
         let seen: Vec<u32> = tiles.read().map(|m| m.tiles).collect();
@@ -147,6 +156,7 @@ mod tests {
             .add_message::<AddTileRequested>()
             .add_message::<ScrollRequested>()
             .add_message::<SaveRequested>()
+            .add_message::<TogglePaletteModeRequested>()
             .add_systems(Update, (paint_on_click, keyboard_commands, record).chain());
         app
     }
@@ -254,6 +264,18 @@ mod tests {
 
         let tiles = std::mem::take(&mut app.world_mut().resource_mut::<Recorded>().tiles);
         assert_eq!(tiles, vec![1]);
+    }
+
+    /// `M` is the keyboard's half of the sidebar's mode button, and like every
+    /// other binding it only asks — `document` decides.
+    #[test]
+    fn m_asks_to_switch_palette_mode() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyM);
+        app.update();
+        assert_eq!(app.world().resource::<Recorded>().mode_toggles, 1);
     }
 
     #[test]
