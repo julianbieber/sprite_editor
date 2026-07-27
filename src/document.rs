@@ -10,7 +10,8 @@ use bevy::prelude::*;
 
 use crate::atlas::AtlasDocument;
 use crate::config::transparent;
-use crate::palette::Palette;
+use crate::oklab::{OklabRamp, OklabRamps};
+use crate::palette::{Palette, PaletteMode};
 
 // ============================================================================
 // REQUESTS
@@ -67,6 +68,34 @@ pub struct MovePaletteColorRequested {
     pub to: usize,
 }
 
+/// Swap which of the two palette specifications is in charge.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct TogglePaletteModeRequested;
+
+/// Overwrite one generated ramp. Like [`SetPaletteColorRequested`], the whole
+/// ramp comes along rather than the field that moved, so a slider drag and an
+/// axis click are the same request and the applier stays an assignment.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct SetRampRequested {
+    pub index: usize,
+    pub ramp: OklabRamp,
+}
+
+/// Append a copy of the ramp being edited, and select its first colour.
+///
+/// A copy rather than a fresh default: several ramps are wanted precisely
+/// because they are variations on each other, so duplicating one and moving a
+/// slider is the shortest route to the second.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct AddRampRequested;
+
+/// Drop a generated ramp. Refused for the last one, for the same reason the last
+/// colour cannot be removed — the palette would be empty.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct RemoveRampRequested {
+    pub index: usize,
+}
+
 // ============================================================================
 // RESOURCES
 // ============================================================================
@@ -107,12 +136,22 @@ impl Plugin for DocumentStatePlugin {
             .add_message::<AddPaletteColorRequested>()
             .add_message::<RemovePaletteColorRequested>()
             .add_message::<MovePaletteColorRequested>()
+            .add_message::<TogglePaletteModeRequested>()
+            .add_message::<SetRampRequested>()
+            .add_message::<AddRampRequested>()
+            .add_message::<RemoveRampRequested>()
             .add_systems(
                 Update,
-                // Chained, not merely grouped: painting reads the palette these
-                // first three write, and a script that selects, edits and paints
-                // in one frame must see its own edits.
+                // Chained, not merely grouped: painting reads the palette the
+                // earlier systems write, and a script that switches mode,
+                // selects, edits and paints in one frame must see its own edits.
+                //
+                // The two generating systems come first because they *replace*
+                // the palette: a selection applied before them would be against
+                // the colours of the mode being left.
                 (
+                    apply_palette_mode,
+                    apply_ramp_edits,
                     apply_color_selection,
                     apply_palette_edits,
                     apply_paint_requests,
@@ -131,6 +170,139 @@ pub struct DocumentEdit;
 // ============================================================================
 // SYSTEMS
 // ============================================================================
+
+/// Rewrites `palette` from the ramps, keeping the selection pointing at a
+/// colour. The generated palette is derived state, so this is the only way it is
+/// ever written and every ramp edit ends here.
+fn regenerate(palette: &mut Palette, ramps: &OklabRamps) {
+    let colors = ramps.colors();
+    // Clamped rather than reset: a ramp that gained a step should not throw the
+    // selection back to the front of the palette.
+    palette.selected = palette.selected.min(colors.len().saturating_sub(1));
+    palette.colors = colors;
+}
+
+/// Switches which specification owns the palette.
+///
+/// Leaving the hand-edited mode parks the palette whole; coming back installs it
+/// again. Nothing else in the editor knows there are two modes — the palette it
+/// reads is the same resource either way.
+fn apply_palette_mode(
+    mut requests: MessageReader<TogglePaletteModeRequested>,
+    mut mode: ResMut<PaletteMode>,
+    mut palette: ResMut<Palette>,
+    ramps: Res<OklabRamps>,
+    mut document: ResMut<AtlasDocument>,
+) {
+    // Two toggles in one frame are a round trip; only the parity matters, and
+    // collapsing them here keeps the stash from being written twice.
+    if requests.read().count().is_multiple_of(2) {
+        return;
+    }
+
+    if mode.is_generated() {
+        if let Some(restored) = mode.restore() {
+            *palette = restored;
+        }
+    } else {
+        mode.stash(palette.clone());
+        regenerate(&mut palette, &ramps);
+    }
+
+    // The two modes save different colours, so the switch itself is an edit —
+    // but it moves no pixel, so `revision` stays put.
+    document.mark_unsaved();
+}
+
+/// The ramp-editing requests, in the same overwrite-then-append-then-remove
+/// order the colour ones use, and for the same reason: a duplicate-then-tweak in
+/// one frame lands on the ramp the append created.
+///
+/// Every branch ends in a regenerate, so the palette can never disagree with the
+/// ramps that produced it. They are applied even in the hand-edited mode — the
+/// ramps are still there, just not on screen — but only the generated mode lets
+/// the change reach the palette.
+fn apply_ramp_edits(
+    mut sets: MessageReader<SetRampRequested>,
+    mut adds: MessageReader<AddRampRequested>,
+    mut removes: MessageReader<RemoveRampRequested>,
+    mut ramps: ResMut<OklabRamps>,
+    mut palette: ResMut<Palette>,
+    mode: Res<PaletteMode>,
+    mut document: ResMut<AtlasDocument>,
+) {
+    let mut changed = false;
+    // Set when an append needs the selection moved onto the new ramp, which can
+    // only be done once the palette has been regenerated around it.
+    let mut select_ramp = None;
+
+    for request in sets.read() {
+        match ramps.ramps.get_mut(request.index) {
+            // A slider drag re-sends the ramp it already set; that is not an
+            // edit, and regenerating on it would rebuild the swatches every
+            // frame of the drag.
+            Some(existing) if *existing == request.ramp => {}
+            Some(existing) => {
+                *existing = request.ramp;
+                changed = true;
+            }
+            None => warn!(
+                "ignoring an edit to ramp {} — there are {}",
+                request.index,
+                ramps.len()
+            ),
+        }
+    }
+
+    for _ in adds.read() {
+        let source = ramps.ramp_of(palette.selected);
+        let Some(&copied) = ramps.get(source) else {
+            warn!("ignoring an added ramp — there is nothing to copy");
+            continue;
+        };
+        ramps.ramps.push(copied);
+        select_ramp = Some(ramps.len() - 1);
+        changed = true;
+    }
+
+    for request in removes.read() {
+        if ramps.len() <= 1 {
+            warn!("refusing to remove the last ramp — the palette would be empty");
+            continue;
+        }
+        if request.index >= ramps.len() {
+            warn!(
+                "ignoring removal of ramp {} — there are {}",
+                request.index,
+                ramps.len()
+            );
+            continue;
+        }
+        ramps.ramps.remove(request.index);
+        // Keep the editor on a ramp that still exists, and on the one that took
+        // the removed one's place rather than on whatever the clamp lands on.
+        select_ramp = Some(request.index.min(ramps.len() - 1));
+        changed = true;
+    }
+
+    if !changed {
+        return;
+    }
+    // The sidecar carries the ramps whichever mode is live, so moving one is an
+    // edit even when nothing on screen shows it.
+    document.mark_unsaved();
+
+    if !mode.is_generated() {
+        // Off-mode the ramps still moved, but they are not what fills the
+        // palette, so the hand-edited colours stay exactly as they are.
+        return;
+    }
+
+    if let Some(ramp) = select_ramp {
+        palette.selected = ramps.offset_of(ramp);
+    }
+    regenerate(&mut palette, &ramps);
+}
 
 /// Selection is applied before painting, so a script can select and paint in the
 /// same frame and get the colour it just asked for.
@@ -157,14 +329,33 @@ fn apply_color_selection(
 /// A palette edit changes what a save writes but not a single pixel — pixels
 /// hold colours, not palette indices — so it marks the document unsaved without
 /// bumping `revision`.
+///
+/// All of it is refused in the generated mode: those colours are derived from the
+/// ramps and the next regenerate would overwrite anything written here, so an
+/// edit that appeared to work and then silently vanished would be worse than one
+/// that never happened.
 fn apply_palette_edits(
     mut sets: MessageReader<SetPaletteColorRequested>,
     mut adds: MessageReader<AddPaletteColorRequested>,
     mut removes: MessageReader<RemovePaletteColorRequested>,
     mut moves: MessageReader<MovePaletteColorRequested>,
     mut palette: ResMut<Palette>,
+    mode: Res<PaletteMode>,
     mut document: ResMut<AtlasDocument>,
 ) {
+    if mode.is_generated() {
+        // Drained, not left buffered, or they would all land on the frame the
+        // mode switches back.
+        let refused = sets.read().count()
+            + adds.read().count()
+            + removes.read().count()
+            + moves.read().count();
+        if refused > 0 {
+            warn!("ignoring {refused} palette edit(s) — the ramps generate these colours");
+        }
+        return;
+    }
+
     let mut changed = false;
 
     for request in sets.read() {
@@ -285,6 +476,11 @@ pub fn seed_document(
 
     commands.insert_resource(document);
     commands.insert_resource(Palette::new());
+    // The generated ramps exist from the start but do not own the palette until
+    // the mode button says so, so a document always opens on what its sidecar
+    // actually stored.
+    commands.insert_resource(OklabRamps::default());
+    commands.insert_resource(PaletteMode::default());
     commands.insert_resource(DocumentPath {
         base: options.path.clone(),
         existed_on_disk: false,
@@ -298,6 +494,7 @@ pub fn seed_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_OKLAB_RAMPS;
 
     const RED: Srgba = Srgba::new(1.0, 0.0, 0.0, 1.0);
     const BLUE: Srgba = Srgba::new(0.0, 0.0, 1.0, 1.0);
@@ -309,7 +506,9 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .add_plugins(DocumentStatePlugin)
             .insert_resource(AtlasDocument::with_tile_size(4))
-            .insert_resource(Palette::with_colors(vec![transparent(), RED, BLUE]));
+            .insert_resource(Palette::with_colors(vec![transparent(), RED, BLUE]))
+            .insert_resource(OklabRamps::default())
+            .insert_resource(PaletteMode::default());
         app
     }
 
@@ -503,7 +702,9 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .add_plugins(DocumentStatePlugin)
             .insert_resource(AtlasDocument::with_tile_size(4))
-            .insert_resource(Palette::with_colors(vec![RED]));
+            .insert_resource(Palette::with_colors(vec![RED]))
+            .insert_resource(OklabRamps::default())
+            .insert_resource(PaletteMode::default());
         app.world_mut()
             .write_message(RemovePaletteColorRequested { index: 0 });
         app.update();
@@ -601,6 +802,261 @@ mod tests {
         let document = app.world().resource::<AtlasDocument>();
         assert_eq!(document.get_pixel_at(0, 0), RED, "the painted pixel keeps its colour");
         assert_eq!(document.revision, revision_after_paint);
+    }
+
+    // ------------------------------------------------------------------------
+    // The two palette specifications
+    // ------------------------------------------------------------------------
+
+    fn toggle_mode(app: &mut App) {
+        app.world_mut().write_message(TogglePaletteModeRequested);
+        app.update();
+    }
+
+    #[test]
+    fn switching_mode_hands_the_palette_to_the_ramps() {
+        let mut app = test_app();
+        toggle_mode(&mut app);
+
+        let expected = app.world().resource::<OklabRamps>().colors();
+        assert!(app.world().resource::<PaletteMode>().is_generated());
+        assert_eq!(app.world().resource::<Palette>().colors, expected);
+        assert!(app.world().resource::<AtlasDocument>().unsaved);
+    }
+
+    /// The hand-edited palette is parked, not rebuilt: switching back has to
+    /// return the colours *and* the selection that were there.
+    #[test]
+    fn switching_back_restores_the_hand_edited_palette() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<Palette>().select(2);
+        let before = app.world().resource::<Palette>().clone();
+
+        toggle_mode(&mut app);
+        toggle_mode(&mut app);
+
+        let palette = app.world().resource::<Palette>();
+        assert!(!app.world().resource::<PaletteMode>().is_generated());
+        assert_eq!(palette.colors, before.colors);
+        assert_eq!(palette.selected, 2);
+    }
+
+    /// The button clamps nothing and the `M` key repeats, so a double toggle is
+    /// a real thing to arrive in one frame. Applying both would stash the
+    /// generated palette over the hand-edited one and lose it.
+    #[test]
+    fn two_switches_in_one_frame_cancel_out() {
+        let mut app = test_app();
+        let before = app.world().resource::<Palette>().colors.clone();
+
+        app.world_mut().write_message(TogglePaletteModeRequested);
+        app.world_mut().write_message(TogglePaletteModeRequested);
+        app.update();
+
+        assert!(!app.world().resource::<PaletteMode>().is_generated());
+        assert_eq!(app.world().resource::<Palette>().colors, before);
+    }
+
+    /// The colours are derived, so an edit to one would be overwritten by the
+    /// next regenerate. Refusing outright beats appearing to work.
+    #[test]
+    fn a_colour_cannot_be_hand_edited_while_the_ramps_generate_it() {
+        let mut app = test_app();
+        toggle_mode(&mut app);
+        let generated = app.world().resource::<Palette>().colors.clone();
+
+        app.world_mut().write_message(SetPaletteColorRequested {
+            index: 0,
+            color: RED,
+        });
+        app.world_mut()
+            .write_message(AddPaletteColorRequested { color: BLUE });
+        app.world_mut()
+            .write_message(RemovePaletteColorRequested { index: 1 });
+        app.world_mut()
+            .write_message(MovePaletteColorRequested { from: 0, to: 1 });
+        app.update();
+
+        assert_eq!(app.world().resource::<Palette>().colors, generated);
+    }
+
+    /// Refused edits must be drained, not left buffered: a reader that only
+    /// woke up after the switch back would apply the whole backlog at once.
+    #[test]
+    fn a_refused_colour_edit_does_not_wait_for_the_mode_to_change_back() {
+        let mut app = test_app();
+        toggle_mode(&mut app);
+
+        app.world_mut().write_message(SetPaletteColorRequested {
+            index: 0,
+            color: RED,
+        });
+        app.update();
+        toggle_mode(&mut app);
+
+        assert_eq!(
+            app.world().resource::<Palette>().get_color(0),
+            Some(transparent()),
+            "the refused edit must not land once the list is back"
+        );
+    }
+
+    #[test]
+    fn editing_a_ramp_regenerates_the_palette() {
+        let mut app = test_app();
+        toggle_mode(&mut app);
+
+        let mut ramp = *app.world().resource::<OklabRamps>().get(0).unwrap();
+        ramp.steps = 3;
+        app.world_mut()
+            .write_message(SetRampRequested { index: 0, ramp });
+        app.update();
+
+        let ramps = app.world().resource::<OklabRamps>();
+        assert_eq!(ramps.step_counts()[0], 3);
+        assert_eq!(app.world().resource::<Palette>().colors, ramps.colors());
+    }
+
+    /// A drag re-sends the ramp it already set. Regenerating on that would
+    /// rebuild the swatch grid every frame the pointer is down.
+    #[test]
+    fn re_setting_the_same_ramp_does_not_dirty_the_document() {
+        let mut app = test_app();
+        toggle_mode(&mut app);
+        app.world_mut().resource_mut::<AtlasDocument>().unsaved = false;
+
+        let ramp = *app.world().resource::<OklabRamps>().get(0).unwrap();
+        app.world_mut()
+            .write_message(SetRampRequested { index: 0, ramp });
+        app.update();
+
+        assert!(!app.world().resource::<AtlasDocument>().unsaved);
+    }
+
+    #[test]
+    fn adding_a_ramp_copies_the_edited_one_and_selects_it() {
+        let mut app = test_app();
+        toggle_mode(&mut app);
+
+        app.world_mut().write_message(AddRampRequested);
+        app.update();
+
+        let ramps = app.world().resource::<OklabRamps>();
+        assert_eq!(ramps.len(), DEFAULT_OKLAB_RAMPS.len() + 1);
+        assert_eq!(
+            ramps.get(ramps.len() - 1),
+            ramps.get(0),
+            "a copy of the ramp being edited, so tweaking it is one drag away"
+        );
+
+        let palette = app.world().resource::<Palette>();
+        assert_eq!(
+            palette.selected,
+            ramps.offset_of(ramps.len() - 1),
+            "the editor edits the selection, so it has to move to the new ramp"
+        );
+        assert_eq!(palette.colors, ramps.colors());
+    }
+
+    #[test]
+    fn removing_a_ramp_leaves_the_selection_on_one_that_exists() {
+        let mut app = test_app();
+        toggle_mode(&mut app);
+        // Select into the last ramp, then remove it.
+        let last = app.world().resource::<OklabRamps>().len() - 1;
+        let offset = app.world().resource::<OklabRamps>().offset_of(last);
+        app.world_mut().resource_mut::<Palette>().select(offset);
+
+        app.world_mut()
+            .write_message(RemoveRampRequested { index: last });
+        app.update();
+
+        let ramps = app.world().resource::<OklabRamps>();
+        assert_eq!(ramps.len(), DEFAULT_OKLAB_RAMPS.len() - 1);
+        let palette = app.world().resource::<Palette>();
+        assert!(palette.selected < palette.len());
+        assert_eq!(palette.colors, ramps.colors());
+    }
+
+    #[test]
+    fn the_last_ramp_cannot_be_removed() {
+        let mut app = test_app();
+        app.world_mut().insert_resource(OklabRamps {
+            ramps: vec![DEFAULT_OKLAB_RAMPS[0]],
+        });
+        toggle_mode(&mut app);
+
+        app.world_mut()
+            .write_message(RemoveRampRequested { index: 0 });
+        app.update();
+
+        assert_eq!(app.world().resource::<OklabRamps>().len(), 1);
+        assert!(!app.world().resource::<Palette>().is_empty());
+    }
+
+    /// The ramps exist in both modes but only fill the palette in one, so moving
+    /// them while the list is in charge must leave the colours alone — and still
+    /// dirty the document, because the sidecar carries the ramps either way.
+    #[test]
+    fn a_ramp_edit_off_mode_leaves_the_hand_edited_palette_alone() {
+        let mut app = test_app();
+        let before = app.world().resource::<Palette>().colors.clone();
+
+        let mut ramp = *app.world().resource::<OklabRamps>().get(0).unwrap();
+        ramp.steps = 3;
+        app.world_mut()
+            .write_message(SetRampRequested { index: 0, ramp });
+        app.update();
+
+        assert_eq!(app.world().resource::<OklabRamps>().step_counts()[0], 3);
+        assert_eq!(app.world().resource::<Palette>().colors, before);
+        assert!(
+            app.world().resource::<AtlasDocument>().unsaved,
+            "a save would now write a different sidecar"
+        );
+        assert_eq!(
+            app.world().resource::<AtlasDocument>().revision,
+            0,
+            "no pixel moved, so the texture must not be re-uploaded"
+        );
+    }
+
+    #[test]
+    fn an_edit_to_a_missing_ramp_changes_nothing() {
+        let mut app = test_app();
+        toggle_mode(&mut app);
+        let before = app.world().resource::<OklabRamps>().clone();
+
+        app.world_mut().write_message(SetRampRequested {
+            index: 42,
+            ramp: DEFAULT_OKLAB_RAMPS[0],
+        });
+        app.world_mut()
+            .write_message(RemoveRampRequested { index: 42 });
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<OklabRamps>().ramps,
+            before.ramps
+        );
+    }
+
+    /// The whole point of generating into `Palette`: painting does not know or
+    /// care which specification produced the colour.
+    #[test]
+    fn a_generated_colour_paints_like_any_other() {
+        let mut app = test_app();
+        app.world_mut().write_message(TogglePaletteModeRequested);
+        app.world_mut().write_message(SelectColorRequested { index: 4 });
+        app.world_mut().write_message(PaintPixelRequested { x: 1, y: 1 });
+        app.update();
+
+        let expected = app.world().resource::<OklabRamps>().colors()[4];
+        assert_eq!(
+            app.world().resource::<AtlasDocument>().get_pixel_at(1, 1),
+            expected,
+            "switch, select and paint in one frame must use the new palette"
+        );
     }
 
     #[test]

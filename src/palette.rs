@@ -2,6 +2,13 @@
 //!
 //! `Srgba` is not `Serialize`, so [`ColorData`] / [`PaletteData`] exist purely to
 //! carry the palette through the JSON sidecar.
+//!
+//! There are two ways to say what the palette holds, and [`PaletteMode`] says
+//! which one is in charge — a hand-edited list, or the Oklab ramps in
+//! [`crate::oklab`]. Only ever one [`Palette`] exists either way: the generated
+//! mode overwrites it and parks the hand-edited one until it is switched back,
+//! so nothing downstream has to know which mode produced the colour it is
+//! painting with.
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -72,6 +79,59 @@ impl PaletteData {
                 .collect(),
             selected_index: Some(palette.selected),
         }
+    }
+}
+
+// ============================================================================
+// MODE
+// ============================================================================
+
+/// Which of the two ways of specifying a palette currently owns [`Palette`].
+///
+/// The invariant is `stashed.is_some() == generated`: the hand-edited palette is
+/// parked here exactly while the generated one is live, so switching back
+/// restores the colours and the selection rather than rebuilding a default.
+/// [`crate::document`] is the only place that maintains it.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct PaletteMode {
+    generated: bool,
+    stashed: Option<Palette>,
+}
+
+impl PaletteMode {
+    pub fn is_generated(&self) -> bool {
+        self.generated
+    }
+
+    /// What the mode button and the status strip call the current mode.
+    pub fn label(&self) -> &'static str {
+        if self.generated {
+            "oklab"
+        } else {
+            "list"
+        }
+    }
+
+    /// The parked hand-edited palette, for the sidecar to write alongside the
+    /// generated one. `None` is not "empty" — it is what says the live palette
+    /// *is* the hand-edited one.
+    pub fn stashed(&self) -> Option<&Palette> {
+        self.stashed.as_ref()
+    }
+
+    /// Parks `live` and switches to the generated mode. The caller installs the
+    /// generated colours; this only remembers what they replaced.
+    pub fn stash(&mut self, live: Palette) {
+        self.stashed = Some(live);
+        self.generated = true;
+    }
+
+    /// Switches back, handing the parked palette over. `None` means the mode was
+    /// already the hand-edited one, which the caller treats as "nothing to do"
+    /// rather than as an error.
+    pub fn restore(&mut self) -> Option<Palette> {
+        self.generated = false;
+        self.stashed.take()
     }
 }
 
@@ -340,6 +400,41 @@ mod tests {
         assert!(palette.reorder_color(0, 2));
         assert_eq!(palette.selected, 2);
         assert!(!palette.reorder_color(0, 0));
+    }
+
+    #[test]
+    fn a_fresh_mode_is_the_hand_edited_one() {
+        let mode = PaletteMode::default();
+        assert!(!mode.is_generated());
+        assert_eq!(mode.label(), "list");
+    }
+
+    #[test]
+    fn stashing_and_restoring_returns_the_palette_untouched() {
+        let mut mode = PaletteMode::default();
+        let mut parked = Palette::with_colors(vec![RED, BLUE]);
+        parked.select(1);
+
+        mode.stash(parked.clone());
+        assert!(mode.is_generated());
+        assert_eq!(mode.label(), "oklab");
+
+        let restored = mode.restore().expect("the parked palette must come back");
+        assert_eq!(restored.colors, parked.colors);
+        assert_eq!(restored.selected, 1, "the selection is parked with it");
+        assert!(!mode.is_generated());
+    }
+
+    /// The stash is what says a mode switch has something to undo, so restoring
+    /// twice must not hand the same palette back a second time.
+    #[test]
+    fn restoring_without_a_stash_yields_nothing() {
+        let mut mode = PaletteMode::default();
+        assert!(mode.restore().is_none());
+
+        mode.stash(Palette::with_colors(vec![RED]));
+        assert!(mode.restore().is_some());
+        assert!(mode.restore().is_none());
     }
 
     #[test]

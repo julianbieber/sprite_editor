@@ -16,13 +16,28 @@
 //!   cost of keeping the colours in the theme, and it is only paid on the two
 //!   clicks that change the palette's length.
 //!
-//! Under the swatches sit four Feathers colour sliders — one per RGBA channel —
-//! which edit the *selected* entry. They are a view, not a store: they emit
-//! [`SetPaletteColorRequested`] and read their position back from `Palette`, so
-//! the palette stays the single source of truth even mid-drag.
+//! Under the swatches sit the palette editor, and *which* editor depends on the
+//! mode the button at the top of the sidebar selects:
+//!
+//! - **`list`** — four Feathers colour sliders, one per RGBA channel, plus the
+//!   reorder and add/remove buttons. They edit the selected entry.
+//! - **`oklab`** — the axis buttons and the sliders of one [`OklabRamp`]: the two
+//!   values it holds fixed, the range it sweeps the third over, and how many
+//!   steps that takes. Which ramp is the one the selected swatch came from, so
+//!   clicking a swatch in another ramp moves the editor to it.
+//!
+//! Both are views, not stores: every widget emits a request carrying the whole
+//! value it wants and reads its position back from the resource the applier
+//! wrote, so the palette and the ramps stay the single source of truth even
+//! mid-drag.
+//!
+//! Neither editor knows about the other. The panel is despawned and rebuilt
+//! whenever the thing it is editing changes shape — the mode, the ramp, or the
+//! ramp's axis, since which two values are fixed decides which sliders exist.
 
 use bevy::feathers::controls::{
-    ColorChannel, FeathersButton, FeathersColorSlider, SliderBaseColor,
+    ButtonVariant, ColorChannel, FeathersButton, FeathersColorSlider, FeathersSlider,
+    SliderBaseColor,
 };
 use bevy::feathers::dark_theme::create_dark_theme;
 use bevy::feathers::display::label_small;
@@ -34,20 +49,22 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::scene::SceneList;
 use bevy::text::FontSize;
-use bevy::ui_widgets::{Activate, ScrollArea, SliderValue, ValueChange};
+use bevy::ui_widgets::{Activate, ScrollArea, SliderPrecision, SliderValue, ValueChange};
 
 use crate::atlas::AtlasDocument;
 use crate::canvas_view::HoveredPixel;
 use crate::config::{
-    EDITOR_FONT_SIZE, EDITOR_ROW_GAP, NEW_PALETTE_COLOR, SIDEBAR_BACKGROUND, SIDEBAR_WIDTH,
+    EDITOR_LABEL_WIDTH, EDITOR_ROW_GAP, NEW_PALETTE_COLOR, SIDEBAR_BACKGROUND, SIDEBAR_WIDTH,
     STATUS_BACKGROUND, STATUS_BAR_HEIGHT, STATUS_FONT_SIZE, STATUS_TEXT, SWATCH_BORDER, SWATCH_GAP,
-    SWATCH_SIZE,
+    SWATCH_ROW_GAP, SWATCH_SIZE,
 };
 use crate::document::{
-    AddPaletteColorRequested, DocumentPath, MovePaletteColorRequested,
-    RemovePaletteColorRequested, SelectColorRequested, SetPaletteColorRequested,
+    AddPaletteColorRequested, AddRampRequested, DocumentPath, MovePaletteColorRequested,
+    RemovePaletteColorRequested, RemoveRampRequested, SelectColorRequested,
+    SetPaletteColorRequested, SetRampRequested, TogglePaletteModeRequested,
 };
-use crate::palette::Palette;
+use crate::oklab::{OklabAxis, OklabRamp, OklabRamps, RampField};
+use crate::palette::{Palette, PaletteMode};
 
 // ============================================================================
 // COMPONENTS
@@ -59,10 +76,32 @@ pub struct PaletteSwatch {
     pub index: usize,
 }
 
-/// The wrapping row the swatches live in; respawned into when the palette's
-/// length changes.
+/// The scrolling column the swatches live in; respawned into whenever the shape
+/// of the palette changes.
 #[derive(Component)]
 pub struct SwatchGrid;
+
+/// One wrapping row of swatches inside the grid — the whole palette in the
+/// hand-edited mode, one ramp in the generated one.
+///
+/// Ramps get a row each rather than being poured into one wrap, because a run of
+/// swatches only reads as a ramp when it starts on its own line.
+#[derive(Component)]
+pub struct SwatchRow;
+
+/// The editor under the swatches, whichever mode built it. Rebuilt wholesale
+/// rather than reconfigured, since the two modes share no widget.
+#[derive(Component)]
+pub struct PaletteEditor;
+
+/// The strip at the top of the sidebar holding the mode button.
+///
+/// It stays put and its *children* are replaced, because the button's caption
+/// names the mode and bevy_ui lays a sidebar out in child order — respawning the
+/// button itself would drop it below the swatches.
+#[derive(Component)]
+pub struct ModeBar;
+
 
 /// One of the four channel sliders under the swatches.
 // No `Debug`: Feathers' `ColorChannel` does not derive it.
@@ -93,6 +132,68 @@ pub struct StatusLabel;
 const SIDEBAR_Z: i32 = 0;
 const STATUS_STRIP_Z: i32 = 1;
 
+// ============================================================================
+// WHAT IS CURRENTLY BUILT
+// ============================================================================
+
+/// The shape of the editor panel on screen, so a rebuild only happens when the
+/// thing being edited actually changed shape rather than every frame a slider
+/// moves.
+///
+/// The axis is part of it because it decides *which* two values are fixed, and
+/// therefore which sliders exist at all.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum EditorShape {
+    /// The RGBA sliders and the colour buttons.
+    Manual,
+    Generated { ramp: usize, axis: OklabAxis },
+}
+
+/// Which editor `build_chrome` or the last rebuild left standing.
+///
+/// A resource rather than a `Local` so that `build_chrome`, which runs in
+/// `Startup`, can seed it — otherwise the first `Update` would tear the panel
+/// down and build the identical one again.
+#[derive(Resource, Debug)]
+struct BuiltEditor(EditorShape);
+
+impl Default for BuiltEditor {
+    /// Matches what a fresh [`PaletteMode`] asks for, so the two agree even if
+    /// something reads this before `build_chrome` has run.
+    fn default() -> Self {
+        Self(EditorShape::Manual)
+    }
+}
+
+/// How many swatches each row of the grid currently holds. The palette's own
+/// length is not enough: two ramps can trade steps without changing the total.
+#[derive(Resource, Debug, Default)]
+struct BuiltSwatchRows(Vec<usize>);
+
+/// The row lengths the swatch grid should have — one row for the whole
+/// hand-edited palette, one per ramp when they are generating it.
+fn swatch_rows(palette: &Palette, mode: &PaletteMode, ramps: &OklabRamps) -> Vec<usize> {
+    if mode.is_generated() {
+        ramps.step_counts()
+    } else {
+        vec![palette.len()]
+    }
+}
+
+/// The editor the current mode calls for, and the ramp it would be editing.
+fn editor_shape(palette: &Palette, mode: &PaletteMode, ramps: &OklabRamps) -> EditorShape {
+    if !mode.is_generated() {
+        return EditorShape::Manual;
+    }
+    // The edited ramp is the one the selected swatch came from, so clicking a
+    // swatch in another ramp is also how you switch to editing it.
+    let ramp = ramps.ramp_of(palette.selected);
+    EditorShape::Generated {
+        ramp,
+        axis: ramps.get(ramp).map(|r| r.axis).unwrap_or(OklabAxis::Lightness),
+    }
+}
+
 /// The channels the sidebar edits, in the order they are stacked. RGBA rather
 /// than HSL because that is how a colour is stored and reported: what the
 /// sliders show and what the status strip's hex says cannot drift.
@@ -114,6 +215,10 @@ impl Plugin for UiChromePlugin {
         app.add_plugins(FeathersPlugins)
             // A baseline theme; the palette tokens get folded in at startup.
             .insert_resource(UiTheme(create_dark_theme()))
+            // Seeded properly by `build_chrome`; initialised here so the rebuild
+            // systems can take them unconditionally.
+            .init_resource::<BuiltEditor>()
+            .init_resource::<BuiltSwatchRows>()
             .add_systems(
                 Startup,
                 (install_palette_theme, build_chrome)
@@ -123,13 +228,19 @@ impl Plugin for UiChromePlugin {
             .add_systems(
                 Update,
                 (
+                    // Everything that writes to a widget already on screen runs
+                    // before the rebuilds that can despawn one. Both sides are
+                    // deferred commands, and a despawn followed by a write to
+                    // the same entity panics — which is exactly what a mode
+                    // switch would do, since it retunes the sliders it is about
+                    // to replace.
+                    (sync_channel_sliders, sync_ramp_sliders, mark_selected_swatch),
                     // The theme has to carry the new colours before any swatch
                     // that reads a token is spawned.
-                    (sync_palette_theme, rebuild_swatches).chain(),
-                    sync_channel_sliders,
-                    mark_selected_swatch,
+                    (sync_palette_theme, rebuild_swatches, rebuild_palette_editor).chain(),
                     update_status_label,
                 )
+                    .chain()
                     // A palette edit applied this frame should reach the sidebar
                     // this frame, not the next one.
                     .after(crate::document::DocumentEdit),
@@ -187,6 +298,22 @@ fn with_channel(color: Srgba, channel: ColorChannel, value: f32) -> Srgba {
 }
 
 // ============================================================================
+// RAMP FIELDS
+// ============================================================================
+
+/// Decimal places a drag on `field` rounds to. The step count is a count, so a
+/// drag on it lands on a whole number of steps.
+///
+/// The only part of a ramp field that is purely presentational, which is why it
+/// lives here and the rest is in [`crate::oklab`].
+fn ramp_precision(field: RampField) -> i32 {
+    match field {
+        RampField::Steps => 0,
+        _ => 2,
+    }
+}
+
+// ============================================================================
 // STARTUP
 // ============================================================================
 
@@ -207,7 +334,12 @@ fn install_palette_theme(palette: Res<Palette>, mut theme: ResMut<UiTheme>) {
     write_palette_tokens(&palette, &mut theme);
 }
 
-fn build_chrome(mut commands: Commands, palette: Res<Palette>) {
+fn build_chrome(
+    mut commands: Commands,
+    palette: Res<Palette>,
+    mode: Res<PaletteMode>,
+    ramps: Res<OklabRamps>,
+) {
     let sidebar = commands
         .spawn((
             Node {
@@ -234,19 +366,32 @@ fn build_chrome(mut commands: Commands, palette: Res<Palette>) {
         ))
         .id();
 
-    let grid = commands
+    // First child, so the mode is the first thing in the sidebar and the switch
+    // is where you look for it.
+    let mode_bar = commands
         .spawn((
             Node {
                 flex_direction: FlexDirection::Row,
-                flex_wrap: FlexWrap::Wrap,
-                align_content: AlignContent::FlexStart,
+                flex_shrink: 0.0,
+                ..default()
+            },
+            ChildOf(sidebar),
+            ModeBar,
+        ))
+        .id();
+    spawn_mode_button(&mut commands, mode_bar, &mode);
+
+    let grid = commands
+        .spawn((
+            Node {
+                flex_direction: FlexDirection::Column,
                 // Takes whatever the editor below it leaves, and scrolls when a
-                // long palette overflows it — `+` has no upper bound, so a
+                // long palette overflows it — neither `+` nor a ramp's step
+                // count has an upper bound tight enough to guarantee a fit, so a
                 // clipped swatch has to stay reachable.
                 flex_grow: 1.0,
                 min_height: px(0),
-                row_gap: px(SWATCH_GAP),
-                column_gap: px(SWATCH_GAP),
+                row_gap: px(SWATCH_ROW_GAP),
                 overflow: Overflow::scroll_y(),
                 ..default()
             },
@@ -258,11 +403,13 @@ fn build_chrome(mut commands: Commands, palette: Res<Palette>) {
         ))
         .id();
 
-    for index in 0..palette.len() {
-        spawn_swatch(&mut commands, grid, index);
-    }
+    let rows = swatch_rows(&palette, &mode, &ramps);
+    spawn_swatch_rows(&mut commands, grid, palette.len(), &rows);
+    commands.insert_resource(BuiltSwatchRows(rows));
 
-    build_palette_editor(&mut commands, sidebar, palette.selected_color());
+    let shape = editor_shape(&palette, &mode, &ramps);
+    spawn_palette_editor(&mut commands, sidebar, shape, &palette, &ramps);
+    commands.insert_resource(BuiltEditor(shape));
 
     commands
         .spawn((
@@ -293,9 +440,32 @@ fn build_chrome(mut commands: Commands, palette: Res<Palette>) {
         });
 }
 
-/// The add/remove row and the four channel sliders, in that order: the buttons
-/// change *which* colour is being edited, the sliders change the colour itself.
-fn build_palette_editor(commands: &mut Commands, sidebar: Entity, selected: Srgba) {
+/// The button that switches the two ways of specifying a palette. Its caption is
+/// the mode it is *in*, not the one it would move to, so the sidebar always says
+/// what you are looking at.
+fn spawn_mode_button(commands: &mut Commands, mode_bar: Entity, mode: &PaletteMode) {
+    commands
+        .spawn_scene(editor_button(
+            match mode.is_generated() {
+                false => "palette: list",
+                true => "palette: oklab",
+            },
+            ButtonVariant::Normal,
+            on_mode_clicked,
+        ))
+        .insert(ChildOf(mode_bar));
+}
+
+/// The panel under the swatches, whichever editor `shape` calls for. Both start
+/// with a row of buttons that change *what* is being edited and continue with
+/// the sliders that change it.
+fn spawn_palette_editor(
+    commands: &mut Commands,
+    sidebar: Entity,
+    shape: EditorShape,
+    palette: &Palette,
+    ramps: &OklabRamps,
+) {
     let editor = commands
         .spawn((
             Node {
@@ -305,10 +475,25 @@ fn build_palette_editor(commands: &mut Commands, sidebar: Entity, selected: Srgb
                 ..default()
             },
             ChildOf(sidebar),
+            PaletteEditor,
         ))
         .id();
 
-    let buttons = commands
+    match shape {
+        EditorShape::Manual => build_color_editor(commands, editor, palette.selected_color()),
+        EditorShape::Generated { ramp, .. } => {
+            // Nothing else can be edited if the ramp is gone, and the panel is
+            // rebuilt the moment the selection lands on one that exists.
+            if let Some(ramp) = ramps.get(ramp) {
+                build_ramp_editor(commands, editor, ramp);
+            }
+        }
+    }
+}
+
+/// A row of equal-width buttons.
+fn button_row(commands: &mut Commands, editor: Entity) -> Entity {
+    commands
         .spawn((
             Node {
                 flex_direction: FlexDirection::Row,
@@ -317,43 +502,56 @@ fn build_palette_editor(commands: &mut Commands, sidebar: Entity, selected: Srgb
             },
             ChildOf(editor),
         ))
+        .id()
+}
+
+/// A captioned slider row. The caption column is a fixed width so the sliders of
+/// both editors line up down the sidebar.
+fn slider_row(commands: &mut Commands, editor: Entity, caption: &str) -> Entity {
+    let row = commands
+        .spawn((
+            Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: px(EDITOR_ROW_GAP),
+                ..default()
+            },
+            ChildOf(editor),
+        ))
         .id();
+
+    commands.spawn_scene(label_small(caption)).insert((
+        Node {
+            width: px(EDITOR_LABEL_WIDTH),
+            ..default()
+        },
+        ChildOf(row),
+    ));
+    row
+}
+
+/// The hand-edited editor: reorder, add and remove, then the four RGBA channels
+/// of the selected entry.
+fn build_color_editor(commands: &mut Commands, editor: Entity, selected: Srgba) {
+    let buttons = button_row(commands, editor);
 
     // Reorder first, then grow and shrink: the two arrows move the entry the
     // sliders below are editing, so they belong next to it.
     commands
-        .spawn_scene(editor_button("<", on_move_left_clicked))
+        .spawn_scene(editor_button("<", ButtonVariant::Normal, on_move_left_clicked))
         .insert(ChildOf(buttons));
     commands
-        .spawn_scene(editor_button(">", on_move_right_clicked))
+        .spawn_scene(editor_button(">", ButtonVariant::Normal, on_move_right_clicked))
         .insert(ChildOf(buttons));
     commands
-        .spawn_scene(editor_button("+", on_add_clicked))
+        .spawn_scene(editor_button("+", ButtonVariant::Normal, on_add_clicked))
         .insert(ChildOf(buttons));
     commands
-        .spawn_scene(editor_button("-", on_remove_clicked))
+        .spawn_scene(editor_button("-", ButtonVariant::Normal, on_remove_clicked))
         .insert(ChildOf(buttons));
 
     for (caption, channel) in EDITED_CHANNELS {
-        let row = commands
-            .spawn((
-                Node {
-                    flex_direction: FlexDirection::Row,
-                    align_items: AlignItems::Center,
-                    column_gap: px(EDITOR_ROW_GAP),
-                    ..default()
-                },
-                ChildOf(editor),
-            ))
-            .id();
-
-        commands.spawn_scene(label_small(caption)).insert((
-            Node {
-                width: px(EDITOR_FONT_SIZE),
-                ..default()
-            },
-            ChildOf(row),
-        ));
+        let row = slider_row(commands, editor, caption);
 
         // Seeded with the selected colour so the first frame is already right
         // rather than snapping into place once `sync_channel_sliders` runs.
@@ -364,6 +562,46 @@ fn build_palette_editor(commands: &mut Commands, sidebar: Entity, selected: Srgb
                 PaletteChannelSlider { channel },
                 SliderBaseColor(Color::Srgba(selected)),
             ));
+    }
+}
+
+/// The generated editor: which value sweeps, how many ramps there are, and then
+/// the six numbers that are the ramp.
+///
+/// The swept axis' button is the primary one, so the panel says which of the
+/// three it is without needing a caption to explain the layout — the two sliders
+/// that follow are the other two, in L, a, b order.
+fn build_ramp_editor(commands: &mut Commands, editor: Entity, ramp: &OklabRamp) {
+    let axes = button_row(commands, editor);
+    for axis in OklabAxis::ALL {
+        let variant = if axis == ramp.axis {
+            ButtonVariant::Primary
+        } else {
+            ButtonVariant::Normal
+        };
+        commands
+            .spawn_scene(editor_button(axis.label(), variant, on_axis_clicked(axis)))
+            .insert(ChildOf(axes));
+    }
+
+    let ramps = button_row(commands, editor);
+    commands
+        .spawn_scene(editor_button("+", ButtonVariant::Normal, on_add_ramp_clicked))
+        .insert(ChildOf(ramps));
+    commands
+        .spawn_scene(editor_button(
+            "-",
+            ButtonVariant::Normal,
+            on_remove_ramp_clicked,
+        ))
+        .insert(ChildOf(ramps));
+
+    for field in RampField::of(ramp) {
+        let row = slider_row(commands, editor, field.label());
+        let (min, max) = field.limits(ramp);
+        commands
+            .spawn_scene(ramp_slider(field, field.read(ramp), min, max))
+            .insert((ChildOf(row), field));
     }
 }
 
@@ -459,6 +697,85 @@ fn on_remove_clicked(
     });
 }
 
+fn on_mode_clicked(
+    _activate: On<Activate>,
+    mut requests: MessageWriter<TogglePaletteModeRequested>,
+) {
+    requests.write(TogglePaletteModeRequested);
+}
+
+/// The ramp every generated-mode widget acts on: the one that produced the
+/// selected swatch.
+///
+/// `None` only while the palette and the ramps disagree, which lasts until the
+/// applier's regenerate — so the widget declines rather than editing a ramp
+/// picked by a stale index.
+fn edited_ramp(palette: &Palette, ramps: &OklabRamps) -> Option<(usize, OklabRamp)> {
+    let index = ramps.ramp_of(palette.selected);
+    ramps.get(index).map(|ramp| (index, *ramp))
+}
+
+/// One of the three axis buttons. Switching axis resets the sweep into the new
+/// axis' units — see [`OklabRamp::with_axis`].
+fn on_axis_clicked(
+    axis: OklabAxis,
+) -> impl Fn(On<Activate>, Res<Palette>, Res<OklabRamps>, MessageWriter<SetRampRequested>)
+       + Clone
+       + Send
+       + Sync
+       + 'static {
+    move |_activate, palette, ramps, mut requests| {
+        if let Some((index, ramp)) = edited_ramp(&palette, &ramps) {
+            requests.write(SetRampRequested {
+                index,
+                ramp: ramp.with_axis(axis),
+            });
+        }
+    }
+}
+
+/// One of the ramp sliders. Like the channel sliders it reports the whole ramp
+/// it wants rather than the value that moved, and it targets the edited ramp
+/// rather than remembering one — so a rebuild cannot leave it pointing at a ramp
+/// that has since been removed.
+///
+/// Named rather than inlined for the same reason the channel one is: the tests
+/// have no pointer to drag with.
+// The return type is the observer's signature spelled out; there is no shorter
+// way to say it until `impl Trait` in type aliases lands.
+#[allow(clippy::type_complexity)]
+fn on_ramp_slider_dragged(
+    field: RampField,
+) -> impl Fn(On<ValueChange<f32>>, Res<Palette>, Res<OklabRamps>, MessageWriter<SetRampRequested>)
+       + Clone
+       + Send
+       + Sync
+       + 'static {
+    move |change, palette, ramps, mut requests| {
+        if let Some((index, ramp)) = edited_ramp(&palette, &ramps) {
+            requests.write(SetRampRequested {
+                index,
+                ramp: field.apply(ramp, change.value),
+            });
+        }
+    }
+}
+
+fn on_add_ramp_clicked(_activate: On<Activate>, mut requests: MessageWriter<AddRampRequested>) {
+    requests.write(AddRampRequested);
+}
+
+fn on_remove_ramp_clicked(
+    _activate: On<Activate>,
+    palette: Res<Palette>,
+    ramps: Res<OklabRamps>,
+    mut requests: MessageWriter<RemoveRampRequested>,
+) {
+    requests.write(RemoveRampRequested {
+        index: ramps.ramp_of(palette.selected),
+    });
+}
+
 fn channel_slider(channel: ColorChannel, value: f32) -> impl Scene {
     bsn! {
         @FeathersColorSlider {
@@ -469,17 +786,34 @@ fn channel_slider(channel: ColorChannel, value: f32) -> impl Scene {
     }
 }
 
-/// One of the editor's four buttons: a captioned Feathers button that runs
-/// `action` when activated. They share a width, so the row divides evenly
-/// however many there are.
-fn editor_button<I, M>(caption: &'static str, action: I) -> impl Scene
+/// One ramp slider. Unlike the channel sliders these have different ranges from
+/// each other, and the step count is a count — hence the precision, which is
+/// what makes a drag land on a whole number of steps.
+fn ramp_slider(field: RampField, value: f32, min: f32, max: f32) -> impl Scene {
+    bsn! {
+        @FeathersSlider {
+            @value: {value},
+            @min: {min},
+            @max: {max},
+        }
+        SliderPrecision({ramp_precision(field)})
+        on(on_ramp_slider_dragged(field))
+    }
+}
+
+/// One of the editor's buttons: a captioned Feathers button that runs `action`
+/// when activated. They share a width, so a row divides evenly however many
+/// there are.
+fn editor_button<I, M>(caption: &str, variant: ButtonVariant, action: I) -> impl Scene
 where
     I: IntoObserverSystem<Activate, (), M> + Clone + Send + Sync + 'static,
     M: Send + Sync + 'static,
 {
+    let caption = caption.to_string();
     bsn! {
         @FeathersButton {
             @caption: {Box::new(bsn_list![label_small(caption)]) as Box<dyn SceneList>},
+            @variant: {variant},
         }
         Node {
             flex_grow: 1.0,
@@ -505,31 +839,119 @@ fn sync_palette_theme(palette: Res<Palette>, mut theme: ResMut<UiTheme>) {
     write_palette_tokens(&palette, &mut theme);
 }
 
+/// Fills the grid with `rows.len()` rows holding `rows[i]` swatches each,
+/// numbering them straight through the palette.
+///
+/// `count` is the palette's own length and bounds the walk, so a signature that
+/// disagreed with it could only produce a short row — never a swatch with no
+/// colour behind it.
+fn spawn_swatch_rows(commands: &mut Commands, grid: Entity, count: usize, rows: &[usize]) {
+    let mut index = 0;
+    for length in rows {
+        let row = commands
+            .spawn((
+                Node {
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    align_content: AlignContent::FlexStart,
+                    flex_shrink: 0.0,
+                    row_gap: px(SWATCH_GAP),
+                    column_gap: px(SWATCH_GAP),
+                    ..default()
+                },
+                ChildOf(grid),
+                SwatchRow,
+            ))
+            .id();
+
+        for _ in 0..*length {
+            if index >= count {
+                return;
+            }
+            spawn_swatch(commands, row, index);
+            index += 1;
+        }
+    }
+}
+
 /// Adding or removing a colour changes how many tokens there are, which no
 /// amount of repainting can express — so the swatches are rebuilt against the
-/// new palette. Recolouring leaves the count alone and skips all of this.
+/// new palette. Recolouring leaves the shape alone and skips all of this.
+///
+/// The shape is the row lengths rather than the total, because two ramps can
+/// trade steps without the palette changing length, and because a mode switch
+/// changes how the same colours are grouped.
 fn rebuild_swatches(
     mut commands: Commands,
     palette: Res<Palette>,
+    mode: Res<PaletteMode>,
+    ramps: Res<OklabRamps>,
+    mut built: ResMut<BuiltSwatchRows>,
     grid: Query<Entity, With<SwatchGrid>>,
-    swatches: Query<Entity, With<PaletteSwatch>>,
+    rows: Query<Entity, With<SwatchRow>>,
 ) {
-    if !palette.is_changed() {
+    if !palette.is_changed() && !mode.is_changed() && !ramps.is_changed() {
         return;
     }
-    if swatches.iter().count() == palette.len() {
+    let wanted = swatch_rows(&palette, &mode, &ramps);
+    if wanted == built.0 {
         return;
     }
     let Ok(grid) = grid.single() else {
         return;
     };
 
-    for entity in &swatches {
+    // Despawning a row takes its swatches with it.
+    for entity in &rows {
         commands.entity(entity).despawn();
     }
-    for index in 0..palette.len() {
-        spawn_swatch(&mut commands, grid, index);
+    spawn_swatch_rows(&mut commands, grid, palette.len(), &wanted);
+    built.0 = wanted;
+}
+
+/// The panel under the swatches edits one thing, and which thing it is changes:
+/// the mode, the ramp the selection lands in, and that ramp's axis all decide
+/// what widgets belong there. None of that can be expressed by moving a slider,
+/// so the panel is despawned and rebuilt — but only when the shape really moved,
+/// or a drag would rebuild it under the pointer every frame.
+fn rebuild_palette_editor(
+    mut commands: Commands,
+    palette: Res<Palette>,
+    mode: Res<PaletteMode>,
+    ramps: Res<OklabRamps>,
+    mut built: ResMut<BuiltEditor>,
+    sidebar: Query<Entity, With<Sidebar>>,
+    editor: Query<Entity, With<PaletteEditor>>,
+    mode_bar: Query<(Entity, Option<&Children>), With<ModeBar>>,
+) {
+    if !palette.is_changed() && !mode.is_changed() && !ramps.is_changed() {
+        return;
     }
+    let wanted = editor_shape(&palette, &mode, &ramps);
+    if wanted == built.0 {
+        return;
+    }
+    let Ok(sidebar) = sidebar.single() else {
+        return;
+    };
+
+    // The caption names the mode, so it only moves when the mode does.
+    if matches!(built.0, EditorShape::Manual) != matches!(wanted, EditorShape::Manual) {
+        if let Ok((bar, children)) = mode_bar.single() {
+            for child in children.into_iter().flatten() {
+                commands.entity(*child).despawn();
+            }
+            spawn_mode_button(&mut commands, bar, &mode);
+        }
+    }
+
+    for entity in &editor {
+        commands.entity(entity).despawn();
+    }
+    // Respawned as the sidebar's last child, which is where it was: the mode bar
+    // and the swatch grid are both still there and both came first.
+    spawn_palette_editor(&mut commands, sidebar, wanted, &palette, &ramps);
+    built.0 = wanted;
 }
 
 /// The sliders show the selected colour, and nothing else ever sets them —
@@ -561,6 +983,36 @@ fn sync_channel_sliders(
     }
 }
 
+/// The ramp sliders show the edited ramp, and nothing else ever sets them —
+/// including mid-drag, where what comes back is the value the ramp accepted
+/// rather than the one the pointer asked for.
+///
+/// Only the values are written here. A slider's *range* depends on the axis, and
+/// changing the axis rebuilds the panel, so a range can never be stale.
+fn sync_ramp_sliders(
+    mut commands: Commands,
+    palette: Res<Palette>,
+    ramps: Res<OklabRamps>,
+    sliders: Query<(Entity, &RampField, &SliderValue)>,
+) {
+    if !palette.is_changed() && !ramps.is_changed() {
+        return;
+    }
+    let Some((_, ramp)) = edited_ramp(&palette, &ramps) else {
+        return;
+    };
+
+    for (entity, field, value) in &sliders {
+        let target = field.read(&ramp);
+        // Guarded for the same reason the channel sliders are: an unchanged
+        // write still counts as a change and would have Feathers rebuild the
+        // track every frame. `SliderValue` is immutable, hence the insert.
+        if value.0 != target {
+            commands.entity(entity).insert(SliderValue(target));
+        }
+    }
+}
+
 /// Keeps the outline on whichever swatch the palette says is selected.
 fn mark_selected_swatch(
     mut commands: Commands,
@@ -587,9 +1039,34 @@ fn mark_selected_swatch(
 
 /// Derived state only. Doubles as the screenshot's caption: it makes a capture
 /// self-describing, so a coordinate can be read off rather than guessed.
+/// What the status strip says about the palette's second half: which mode, and
+/// in the generated one which ramp of how many and what it sweeps.
+///
+/// The ramp spec is there so a screenshot of a generated palette is as
+/// self-describing as the rest of the strip — the swatches show the colours, but
+/// only this says what produced them.
+fn describe_palette_mode(palette: &Palette, mode: &PaletteMode, ramps: &OklabRamps) -> String {
+    if !mode.is_generated() {
+        return mode.label().to_string();
+    }
+    let index = ramps.ramp_of(palette.selected);
+    match ramps.get(index) {
+        Some(ramp) => format!(
+            "{} [{}/{}] {}",
+            mode.label(),
+            index,
+            ramps.len(),
+            ramp.describe()
+        ),
+        None => mode.label().to_string(),
+    }
+}
+
 fn update_status_label(
     document: Res<AtlasDocument>,
     palette: Res<Palette>,
+    mode: Res<PaletteMode>,
+    ramps: Res<OklabRamps>,
     path: Res<DocumentPath>,
     hovered: Res<HoveredPixel>,
     mut labels: Query<&mut Text, With<StatusLabel>>,
@@ -606,7 +1083,7 @@ fn update_status_label(
     };
 
     let status = format!(
-        "{}{}    {}    {} [{}/{}]    {}x{} tiles of {}px",
+        "{}{}    {}    {} [{}/{}]    {}    {}x{} tiles of {}px",
         path.display_name(),
         if document.unsaved { "*" } else { "" },
         position,
@@ -615,6 +1092,7 @@ fn update_status_label(
         // readable straight off a screenshot.
         palette.selected,
         palette.len(),
+        describe_palette_mode(&palette, &mode, &ramps),
         document.width_in_tiles,
         document.height_in_tiles,
         document.tile_size,
@@ -762,6 +1240,10 @@ mod tests {
         adds: Vec<Srgba>,
         removes: Vec<usize>,
         moves: Vec<(usize, usize)>,
+        modes: usize,
+        ramp_sets: Vec<(usize, OklabRamp)>,
+        ramp_adds: usize,
+        ramp_removes: Vec<usize>,
     }
 
     fn record(
@@ -769,6 +1251,10 @@ mod tests {
         mut adds: MessageReader<AddPaletteColorRequested>,
         mut removes: MessageReader<RemovePaletteColorRequested>,
         mut moves: MessageReader<MovePaletteColorRequested>,
+        mut modes: MessageReader<TogglePaletteModeRequested>,
+        mut ramp_sets: MessageReader<SetRampRequested>,
+        mut ramp_adds: MessageReader<AddRampRequested>,
+        mut ramp_removes: MessageReader<RemoveRampRequested>,
         mut recorded: ResMut<Recorded>,
     ) {
         let seen: Vec<(usize, Srgba)> = sets.read().map(|m| (m.index, m.color)).collect();
@@ -779,6 +1265,13 @@ mod tests {
         recorded.removes.extend(seen);
         let seen: Vec<(usize, usize)> = moves.read().map(|m| (m.from, m.to)).collect();
         recorded.moves.extend(seen);
+        recorded.modes += modes.read().count();
+        let seen: Vec<(usize, OklabRamp)> =
+            ramp_sets.read().map(|m| (m.index, m.ramp)).collect();
+        recorded.ramp_sets.extend(seen);
+        recorded.ramp_adds += ramp_adds.read().count();
+        let seen: Vec<usize> = ramp_removes.read().map(|m| m.index).collect();
+        recorded.ramp_removes.extend(seen);
     }
 
     /// The sidebar's widgets without the sidebar: the observers are attached to
@@ -791,10 +1284,21 @@ mod tests {
             .add_message::<AddPaletteColorRequested>()
             .add_message::<RemovePaletteColorRequested>()
             .add_message::<MovePaletteColorRequested>()
+            .add_message::<TogglePaletteModeRequested>()
+            .add_message::<SetRampRequested>()
+            .add_message::<AddRampRequested>()
+            .add_message::<RemoveRampRequested>()
             .init_resource::<Recorded>()
+            .insert_resource(OklabRamps::default())
             .insert_resource(palette)
             .add_systems(Update, record);
         app
+    }
+
+    /// A widget app whose palette is what the ramps generate, which is the state
+    /// the generated editor is only ever shown in.
+    fn generated_widget_app() -> App {
+        widget_app(Palette::with_colors(OklabRamps::default().colors()))
     }
 
     #[test]
@@ -898,5 +1402,178 @@ mod tests {
         app.update();
 
         assert_eq!(app.world().resource::<Recorded>().moves, vec![(0, 0), (1, 1)]);
+    }
+
+    // ------------------------------------------------------------------------
+    // The generated editor
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn the_mode_button_only_asks_to_switch() {
+        let mut app = widget_app(Palette::with_colors(vec![RED]));
+        let button = app.world_mut().spawn_empty().observe(on_mode_clicked).id();
+        app.world_mut().trigger(Activate { entity: button });
+        app.update();
+
+        assert_eq!(app.world().resource::<Recorded>().modes, 1);
+    }
+
+    /// The generated widgets act on the ramp the selection came from, so a
+    /// selection two ramps along has to reach the second one.
+    #[test]
+    fn the_generated_widgets_target_the_ramp_the_selection_came_from() {
+        let mut app = generated_widget_app();
+        let offset = app.world().resource::<OklabRamps>().offset_of(2);
+        app.world_mut().resource_mut::<Palette>().select(offset);
+
+        let button = app
+            .world_mut()
+            .spawn_empty()
+            .observe(on_remove_ramp_clicked)
+            .id();
+        app.world_mut().trigger(Activate { entity: button });
+        app.update();
+
+        assert_eq!(app.world().resource::<Recorded>().ramp_removes, vec![2]);
+    }
+
+    #[test]
+    fn an_axis_button_asks_for_the_whole_ramp_sweeping_that_axis() {
+        let mut app = generated_widget_app();
+        let button = app
+            .world_mut()
+            .spawn_empty()
+            .observe(on_axis_clicked(OklabAxis::B))
+            .id();
+        app.world_mut().trigger(Activate { entity: button });
+        app.update();
+
+        let before = *app.world().resource::<OklabRamps>().get(0).unwrap();
+        assert_eq!(
+            app.world().resource::<Recorded>().ramp_sets,
+            vec![(0, before.with_axis(OklabAxis::B))]
+        );
+    }
+
+    #[test]
+    fn dragging_a_ramp_slider_asks_for_the_whole_ramp_it_wants() {
+        let mut app = generated_widget_app();
+        let slider = app
+            .world_mut()
+            .spawn_empty()
+            .observe(on_ramp_slider_dragged(RampField::To))
+            .id();
+        // `ValueChange` is generic; an untyped literal would infer `f64` and the
+        // `f32` observer would silently never fire.
+        app.world_mut().trigger(ValueChange::<f32> {
+            source: slider,
+            value: 0.5,
+            is_final: true,
+        });
+        app.update();
+
+        let before = *app.world().resource::<OklabRamps>().get(0).unwrap();
+        assert_eq!(
+            app.world().resource::<Recorded>().ramp_sets,
+            vec![(0, OklabRamp { to: 0.5, ..before })],
+            "one field moves and the rest of the ramp comes along unchanged"
+        );
+    }
+
+    #[test]
+    fn the_ramp_buttons_add_and_remove() {
+        let mut app = generated_widget_app();
+        let add = app.world_mut().spawn_empty().observe(on_add_ramp_clicked).id();
+        let remove = app
+            .world_mut()
+            .spawn_empty()
+            .observe(on_remove_ramp_clicked)
+            .id();
+        app.world_mut().trigger(Activate { entity: add });
+        app.world_mut().trigger(Activate { entity: remove });
+        app.update();
+
+        let recorded = app.world().resource::<Recorded>();
+        assert_eq!(recorded.ramp_adds, 1);
+        assert_eq!(recorded.ramp_removes, vec![0]);
+    }
+
+    // ------------------------------------------------------------------------
+    // What gets rebuilt
+    // ------------------------------------------------------------------------
+
+    /// One row for the hand-edited palette, one per ramp when they generate it —
+    /// which is what makes a run of swatches read as a ramp.
+    #[test]
+    fn the_swatch_rows_follow_the_mode() {
+        let ramps = OklabRamps::default();
+        let mut mode = PaletteMode::default();
+        let manual = Palette::new();
+        assert_eq!(swatch_rows(&manual, &mode, &ramps), vec![manual.len()]);
+
+        mode.stash(manual.clone());
+        let generated = Palette::with_colors(ramps.colors());
+        assert_eq!(swatch_rows(&generated, &mode, &ramps), ramps.step_counts());
+    }
+
+    /// The signature has to notice two ramps trading steps, because the total —
+    /// and so the palette's length — does not move.
+    #[test]
+    fn the_swatch_rows_notice_a_reshuffle_that_keeps_the_total() {
+        let mut mode = PaletteMode::default();
+        mode.stash(Palette::new());
+        let before = OklabRamps::default();
+        let mut after = before.clone();
+        after.ramps[0].steps -= 2;
+        after.ramps[1].steps += 2;
+
+        let palette = Palette::with_colors(before.colors());
+        assert_eq!(before.colors().len(), after.colors().len());
+        assert_ne!(
+            swatch_rows(&palette, &mode, &before),
+            swatch_rows(&palette, &mode, &after)
+        );
+    }
+
+    /// The panel is rebuilt on this, so it has to move for every change that
+    /// alters which widgets belong there — and stay put for the ones that do
+    /// not, or a drag would rebuild the panel under the pointer.
+    #[test]
+    fn the_editor_shape_tracks_the_mode_the_ramp_and_the_axis() {
+        let ramps = OklabRamps::default();
+        let mut mode = PaletteMode::default();
+        let manual = Palette::new();
+        assert_eq!(editor_shape(&manual, &mode, &ramps), EditorShape::Manual);
+
+        mode.stash(manual);
+        let mut palette = Palette::with_colors(ramps.colors());
+        let first = editor_shape(&palette, &mode, &ramps);
+
+        // A different colour of the same ramp edits the same thing.
+        palette.select(1);
+        assert_eq!(editor_shape(&palette, &mode, &ramps), first);
+
+        // A colour of another ramp does not.
+        palette.select(ramps.offset_of(1));
+        assert_ne!(editor_shape(&palette, &mode, &ramps), first);
+
+        // Nor does the same ramp sweeping a different axis, since that changes
+        // which two values have sliders.
+        let mut swept = ramps.clone();
+        swept.ramps[0] = swept.ramps[0].with_axis(OklabAxis::B);
+        palette.select(0);
+        assert_ne!(editor_shape(&palette, &mode, &swept), first);
+    }
+
+    #[test]
+    fn only_the_step_count_slider_snaps_to_whole_numbers() {
+        assert_eq!(ramp_precision(RampField::Steps), 0);
+        for field in [
+            RampField::From,
+            RampField::To,
+            RampField::Fixed(OklabAxis::Lightness),
+        ] {
+            assert!(ramp_precision(field) > 0, "{field:?} is a continuous value");
+        }
     }
 }
