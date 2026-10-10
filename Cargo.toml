@@ -8,8 +8,8 @@ license = "MIT OR Apache-2.0"
 readme = "AGENTS.md"
 
 [dependencies]
-# Core engine with Feathers UI (built into Bevy 0.19)
-bevy = { version = "0.19", features = ["2d", "bevy_ui", "bevy_feathers"] }
+# Core engine with Feathers UI (built into Bevy 0.20)
+bevy = { version = "0.20", features = ["2d", "bevy_ui", "bevy_feathers"] }
 
 # Serialization for saving/loading
 serde = { version = "1.0", features = ["derive"] }

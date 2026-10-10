@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Bevy 0.19 desktop editor for sprite atlases: one image split into square tiles,
+A Bevy 0.20 desktop editor for sprite atlases: one image split into square tiles,
 edited pixel by pixel with a colour palette. Single binary crate, no workspace.
 
 The supported workflow is: open a file from a CLI argument, select a palette
@@ -206,7 +206,8 @@ One consequence worth remembering: a ramp edit dirties the document *even in
 ### The palette sidebar goes through the Feathers theme
 
 Swatch colours live in `UiTheme` as one `ThemeToken` per palette index
-(`ColorPalette::{i}`), generated at startup from the *loaded* palette by
+(`ColorPalette::{i}`), each assigned a same-named `SemanticToken` that holds the
+colour — Feathers 0.20 resolves a token through that second level — generated at startup from the *loaded* palette by
 `install_palette_theme`. There is no hardcoded colour list. The consequence is a
 startup ordering constraint, declared in `main.rs` because no single plugin owns
 it:
@@ -277,7 +278,7 @@ observer silently never fires.
   crate-level allow.
 - Colours are `Srgba` end to end (f32 0.0–1.0); transparent is
   `config::transparent()`, and it is palette entry 0 so erasing needs no tool.
-- Bevy 0.19 calls buffered events **messages**: `#[derive(Message)]`,
+- Bevy 0.20 calls buffered events **messages**: `#[derive(Message)]`,
   `MessageWriter`/`MessageReader`, `app.add_message::<T>()`. `Event` is for
   observers (`On<Activate>`).
 
