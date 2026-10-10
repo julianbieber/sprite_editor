@@ -8,7 +8,7 @@ pixel-level editing with a colour palette, tile management, and PNG + JSON
 persistence.
 
 **Technology Stack:**
-- **Engine:** Bevy 0.19
+- **Engine:** Bevy 0.20
 - **UI:** `bevy_ui` with `bevy_feathers` widgets for the palette; the canvas is a
   world-space sprite on its own camera
 - **Language:** Rust
@@ -212,7 +212,7 @@ struct CanvasView {             // Resource
 }
 ```
 
-### Edit requests (Bevy 0.19 "messages")
+### Edit requests (Bevy 0.20 "messages")
 
 `PaintPixelRequested { x, y }`, `SelectColorRequested { index }`,
 `AddTileRequested { tiles }`, `ScrollRequested { tiles }`, `SaveRequested`,
@@ -398,7 +398,7 @@ drawing and hit testing cannot drift apart.
 
 ```toml
 [dependencies]
-bevy = { version = "0.19", features = ["2d", "bevy_ui", "bevy_feathers"] }
+bevy = { version = "0.20", features = ["2d", "bevy_ui", "bevy_feathers"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 image = "0.25"

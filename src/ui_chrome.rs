@@ -42,12 +42,11 @@ use bevy::feathers::controls::{
 use bevy::feathers::dark_theme::create_dark_theme;
 use bevy::feathers::display::label_small;
 use bevy::feathers::focus::FocusIndicator;
-use bevy::feathers::theme::{ThemeBackgroundColor, ThemeToken, UiTheme};
+use bevy::feathers::theme::{SemanticToken, ThemeBackgroundColor, ThemeToken, UiTheme};
 use bevy::feathers::FeathersPlugins;
 use bevy::ecs::system::IntoObserverSystem;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::scene::SceneList;
 use bevy::text::FontSize;
 use bevy::ui_widgets::{Activate, ScrollArea, SliderPrecision, SliderValue, ValueChange};
 
@@ -257,6 +256,10 @@ fn palette_token(index: usize) -> ThemeToken {
     ThemeToken::new(format!("ColorPalette::{index}").into())
 }
 
+fn palette_semantic_token(index: usize) -> SemanticToken {
+    SemanticToken::new(format!("ColorPalette::{index}").into())
+}
+
 // ============================================================================
 // CHANNELS
 // ============================================================================
@@ -321,11 +324,19 @@ fn ramp_precision(field: RampField) -> i32 {
 /// a longer palette so a stale token cannot resurface under a later colour.
 fn write_palette_tokens(palette: &Palette, theme: &mut UiTheme) {
     for (index, color) in palette.colors.iter().enumerate() {
-        theme.0.color.insert(palette_token(index), Color::Srgba(*color));
+        theme
+            .0
+            .token_assignments
+            .insert(palette_token(index), palette_semantic_token(index));
+        theme
+            .0
+            .semantic_base
+            .insert(palette_semantic_token(index), Color::Srgba(*color));
     }
 
     let mut index = palette.len();
-    while theme.0.color.remove(&palette_token(index)).is_some() {
+    while theme.0.token_assignments.remove(&palette_token(index)).is_some() {
+        theme.0.semantic_base.remove(&palette_semantic_token(index));
         index += 1;
     }
 }
@@ -792,10 +803,10 @@ fn channel_slider(channel: ColorChannel, value: f32) -> impl Scene {
 fn ramp_slider(field: RampField, value: f32, min: f32, max: f32) -> impl Scene {
     bsn! {
         @FeathersSlider {
-            @value: {value},
             @min: {min},
             @max: {max},
         }
+        SliderValue({value})
         SliderPrecision({ramp_precision(field)})
         on(on_ramp_slider_dragged(field))
     }
@@ -806,13 +817,13 @@ fn ramp_slider(field: RampField, value: f32, min: f32, max: f32) -> impl Scene {
 /// there are.
 fn editor_button<I, M>(caption: &str, variant: ButtonVariant, action: I) -> impl Scene
 where
-    I: IntoObserverSystem<Activate, (), M> + Clone + Send + Sync + 'static,
+    I: IntoObserverSystem<Activate, M> + Clone + Send + Sync + 'static,
     M: Send + Sync + 'static,
 {
     let caption = caption.to_string();
     bsn! {
         @FeathersButton {
-            @caption: {Box::new(bsn_list![label_small(caption)]) as Box<dyn SceneList>},
+            @caption: bsn! { @label_small(caption) },
             @variant: {variant},
         }
         Node {
@@ -1116,6 +1127,11 @@ mod tests {
     const RED: Srgba = Srgba::new(1.0, 0.0, 0.0, 1.0);
     const GREEN: Srgba = Srgba::new(0.0, 1.0, 0.0, 1.0);
 
+    fn palette_token_color(theme: &UiTheme, index: usize) -> Option<&Color> {
+        let semantic = theme.0.token_assignments.get(&palette_token(index))?;
+        theme.0.semantic_base.get(semantic)
+    }
+
     #[test]
     fn every_palette_index_gets_its_own_theme_token() {
         let palette = Palette::new();
@@ -1140,15 +1156,15 @@ mod tests {
 
         let theme = app.world().resource::<UiTheme>();
         assert_eq!(
-            theme.0.color.get(&palette_token(0)),
+            palette_token_color(theme, 0),
             Some(&Color::srgba(1.0, 0.0, 0.0, 1.0))
         );
         assert_eq!(
-            theme.0.color.get(&palette_token(1)),
+            palette_token_color(theme, 1),
             Some(&Color::srgba(0.0, 1.0, 0.0, 1.0))
         );
         assert!(
-            theme.0.color.get(&palette_token(2)).is_none(),
+            palette_token_color(theme, 2).is_none(),
             "no token should exist for a colour the palette does not have"
         );
     }
@@ -1163,7 +1179,7 @@ mod tests {
         write_palette_tokens(&palette, &mut theme);
 
         assert_eq!(
-            theme.0.color.get(&palette_token(1)),
+            palette_token_color(&theme, 1),
             Some(&Color::srgba(0.0, 0.0, 1.0, 1.0))
         );
     }
@@ -1182,10 +1198,10 @@ mod tests {
         }
         write_palette_tokens(&palette, &mut theme);
 
-        assert!(theme.0.color.get(&palette_token(1)).is_some());
+        assert!(palette_token_color(&theme, 1).is_some());
         for index in 2..full_length {
             assert!(
-                theme.0.color.get(&palette_token(index)).is_none(),
+                palette_token_color(&theme, index).is_none(),
                 "token {index} outlived its colour"
             );
         }
